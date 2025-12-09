@@ -2,7 +2,11 @@ package registry
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -56,8 +60,13 @@ func (s *Service) Register(ctx context.Context, authCtx *common.AuthContext, inp
 	if err != nil {
 		return nil, common.NewStatusError(http.StatusForbidden, err.Error())
 	}
+	pubKeyBytes, err := normalizePublicKey(publicKey)
+	if err != nil {
+		return nil, common.NewStatusError(http.StatusBadRequest, err.Error())
+	}
+	canonicalPublicKey := base64.StdEncoding.EncodeToString(pubKeyBytes)
 	fabricID := buildFabricClientID(nodeID)
-	args := []string{"RegisterTrainer", did, nodeID, verified.Hash, publicKey}
+	args := []string{"RegisterTrainer", did, nodeID, verified.Hash, canonicalPublicKey}
 	if err := s.fabric.InvokeChaincode(s.cfg.DefaultPeer, fabricID, args); err != nil {
 		return nil, err
 	}
@@ -68,7 +77,7 @@ func (s *Service) Register(ctx context.Context, authCtx *common.AuthContext, inp
 		DID:            did,
 		NodeID:         nodeID,
 		VCHash:         verified.Hash,
-		PublicKey:      publicKey,
+		PublicKey:      canonicalPublicKey,
 		RegisteredAt:   now,
 	}
 	if err := s.store.Save(record); err != nil {
@@ -95,4 +104,25 @@ func buildFabricClientID(nodeID string) string {
 		return "trainer-default"
 	}
 	return id
+}
+
+func normalizePublicKey(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("public key is required")
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+		if len(decoded) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("public key must be %d bytes (base64)", ed25519.PublicKeySize)
+		}
+		return decoded, nil
+	}
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("public key must be base64 or hex: %w", err)
+	}
+	if len(decoded) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public key must be %d bytes (hex)", ed25519.PublicKeySize)
+	}
+	return decoded, nil
 }

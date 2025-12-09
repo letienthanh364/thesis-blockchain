@@ -40,7 +40,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(cfg))
 	registry.NewHTTPHandler(regSvc).RegisterRoutes(mux, auth)
-	data.NewHTTPHandler(dataSvc).RegisterRoutes(mux, auth)
+	data.NewHTTPHandler(dataSvc, store).RegisterRoutes(mux, auth)
 
 	port := os.Getenv("PORT")
 	if port == "" {

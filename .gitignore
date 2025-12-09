@@ -38,5 +38,6 @@ jwt.js
 # Local secret material (admin/trainer keys, signed VCs, etc.)
 keys/
 api-gateway/keys/
+api-gateway/logs/
 *.pem
 *.b64

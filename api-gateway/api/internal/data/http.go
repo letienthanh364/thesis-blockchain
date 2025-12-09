@@ -2,26 +2,44 @@ package data
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/nebula/api-gateway/internal/common"
+	"github.com/nebula/api-gateway/internal/registry"
 )
 
 // HTTPHandler exposes the commit/retrieve endpoints.
 type HTTPHandler struct {
-	svc *Service
+	svc   *Service
+	store *registry.Store
 }
 
 // NewHTTPHandler builds a handler.
-func NewHTTPHandler(svc *Service) *HTTPHandler {
-	return &HTTPHandler{svc: svc}
+func NewHTTPHandler(svc *Service, store *registry.Store) *HTTPHandler {
+	return &HTTPHandler{svc: svc, store: store}
 }
 
 // RegisterRoutes mounts the handler on the mux.
 func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux, auth *common.Authenticator) {
-	mux.Handle("/data/commit", auth.RequireAuth(http.HandlerFunc(h.handleCommit)))
-	mux.Handle("/data/", auth.RequireAuth(http.HandlerFunc(h.handleRetrieve)))
+	keyFunc := func(header *common.TokenHeader, claims *common.JWTClaims) (*common.KeySpec, error) {
+		subject := strings.TrimSpace(claims.Subject)
+		if subject == "" {
+			return nil, errors.New("token missing subject")
+		}
+		record, ok := h.store.FindByJWTSub(subject)
+		if !ok {
+			return nil, errors.New("trainer not registered")
+		}
+		pub, err := record.PublicKeyBytes()
+		if err != nil {
+			return nil, err
+		}
+		return &common.KeySpec{Algorithm: "EdDSA", PublicKey: pub}, nil
+	}
+	mux.Handle("/data/commit", auth.RequireAuthWithKeyFunc(keyFunc, http.HandlerFunc(h.handleCommit)))
+	mux.Handle("/data/", auth.RequireAuthWithKeyFunc(keyFunc, http.HandlerFunc(h.handleRetrieve)))
 }
 
 type commitRequest struct {

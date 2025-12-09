@@ -1,10 +1,12 @@
 package registry
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/nebula/api-gateway/internal/common"
@@ -108,4 +110,16 @@ func (s *Store) persistLocked() error {
 		return err
 	}
 	return common.AtomicWriteFile(s.path, payload, 0o600)
+}
+
+// PublicKeyBytes returns the trainer public key decoded from base64.
+func (r *TrainerRecord) PublicKeyBytes() ([]byte, error) {
+	if strings.TrimSpace(r.PublicKey) == "" {
+		return nil, errors.New("trainer record missing public key")
+	}
+	key, err := base64.StdEncoding.DecodeString(r.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
 }

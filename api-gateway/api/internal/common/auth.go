@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,6 +29,9 @@ type AuthContext struct {
 	NodeID  string
 	State   string
 	Role    Role
+	Token   string
+	Claims  *JWTClaims
+	Header  *TokenHeader
 }
 
 // Authenticator validates and parses incoming JWT bearer tokens.
@@ -43,10 +47,41 @@ func NewAuthenticator(secret string) (*Authenticator, error) {
 	return &Authenticator{secret: []byte(secret)}, nil
 }
 
+// TokenHeader describes the JWT header fields the gateway cares about.
+type TokenHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
+	KID string `json:"kid,omitempty"`
+}
+
+// JWTClaims captures the subset of claims required by the gateway.
+type JWTClaims struct {
+	Subject string      `json:"sub"`
+	State   string      `json:"state"`
+	Role    string      `json:"role"`
+	Expiry  json.Number `json:"exp"`
+	Issued  json.Number `json:"iat,omitempty"`
+}
+
+// KeySpec instructs the authenticator how to verify a token signature.
+type KeySpec struct {
+	Algorithm string
+	Secret    []byte
+	PublicKey []byte
+}
+
+// KeyFunc resolves the verification key for the token being processed.
+type KeyFunc func(header *TokenHeader, claims *JWTClaims) (*KeySpec, error)
+
 // RequireAuth wraps an HTTP handler with JWT authentication and optional role checks.
 func (a *Authenticator) RequireAuth(next http.Handler, allowedRoles ...Role) http.Handler {
+	return a.RequireAuthWithKeyFunc(nil, next, allowedRoles...)
+}
+
+// RequireAuthWithKeyFunc allows callers to override the verification key on a per-token basis.
+func (a *Authenticator) RequireAuthWithKeyFunc(keyFunc KeyFunc, next http.Handler, allowedRoles ...Role) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authCtx, err := a.authenticateRequest(r)
+		authCtx, err := a.authenticateRequest(r, keyFunc)
 		if err != nil {
 			WriteErrorWithCode(w, http.StatusUnauthorized, err)
 			return
@@ -60,7 +95,7 @@ func (a *Authenticator) RequireAuth(next http.Handler, allowedRoles ...Role) htt
 	})
 }
 
-func (a *Authenticator) authenticateRequest(r *http.Request) (*AuthContext, error) {
+func (a *Authenticator) authenticateRequest(r *http.Request, keyFunc KeyFunc) (*AuthContext, error) {
 	raw := strings.TrimSpace(r.Header.Get("Authorization"))
 	if raw == "" {
 		return nil, errors.New("missing Authorization header")
@@ -69,39 +104,30 @@ func (a *Authenticator) authenticateRequest(r *http.Request) (*AuthContext, erro
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return nil, errors.New("authorization header must be in the format Bearer <token>")
 	}
-	return a.parseToken(parts[1])
+	return a.parseToken(parts[1], keyFunc)
 }
 
-func (a *Authenticator) parseToken(tokenString string) (*AuthContext, error) {
+func (a *Authenticator) parseToken(tokenString string, keyFunc KeyFunc) (*AuthContext, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, errors.New("token must contain header, payload, and signature")
 	}
 	headerSegment, payloadSegment, signatureSegment := parts[0], parts[1], parts[2]
 	unsigned := fmt.Sprintf("%s.%s", headerSegment, payloadSegment)
-	if err := a.verifySignature(unsigned, signatureSegment); err != nil {
-		return nil, err
-	}
-	var header struct {
-		Alg string `json:"alg"`
-		Typ string `json:"typ"`
-	}
+
+	var header TokenHeader
 	if err := decodeSegment(headerSegment, &header); err != nil {
 		return nil, fmt.Errorf("invalid token header: %w", err)
 	}
-	if header.Alg != "HS256" {
-		return nil, fmt.Errorf("unsupported signing algorithm %s", header.Alg)
-	}
-	var claims struct {
-		Subject string      `json:"sub"`
-		State   string      `json:"state"`
-		Role    string      `json:"role"`
-		Expiry  json.Number `json:"exp"`
-		Expires int64       `json:"-"`
-	}
+	var claims JWTClaims
 	if err := decodeSegment(payloadSegment, &claims); err != nil {
 		return nil, fmt.Errorf("invalid token payload: %w", err)
 	}
+
+	if err := a.verifySignature(unsigned, signatureSegment, &header, &claims, keyFunc); err != nil {
+		return nil, err
+	}
+
 	if claims.Expiry == "" {
 		return nil, errors.New("token missing exp claim")
 	}
@@ -113,6 +139,9 @@ func (a *Authenticator) parseToken(tokenString string) (*AuthContext, error) {
 		return nil, errors.New("token has expired")
 	}
 	state := strings.TrimSpace(claims.State)
+	if state == "" {
+		return nil, errors.New("token missing state claim")
+	}
 	role, err := ParseRole(claims.Role)
 	if err != nil {
 		return nil, err
@@ -126,18 +155,63 @@ func (a *Authenticator) parseToken(tokenString string) (*AuthContext, error) {
 		NodeID:  subject,
 		State:   state,
 		Role:    role,
+		Token:   tokenString,
+		Claims:  &claims,
+		Header:  &header,
 	}, nil
 }
 
-func (a *Authenticator) verifySignature(unsigned, signatureSegment string) error {
+func (a *Authenticator) verifySignature(unsigned, signatureSegment string, header *TokenHeader, claims *JWTClaims, keyFunc KeyFunc) error {
+	keySpec, err := a.resolveKey(header, claims, keyFunc)
+	if err != nil {
+		return err
+	}
+	switch strings.ToUpper(keySpec.Algorithm) {
+	case "HS256":
+		return verifyHMACSignature(unsigned, signatureSegment, keySpec.Secret)
+	case "EDDSA":
+		return verifyEd25519Signature(unsigned, signatureSegment, keySpec.PublicKey)
+	default:
+		return fmt.Errorf("unsupported signing algorithm %s", keySpec.Algorithm)
+	}
+}
+
+func (a *Authenticator) resolveKey(header *TokenHeader, claims *JWTClaims, keyFunc KeyFunc) (*KeySpec, error) {
+	if keyFunc != nil {
+		return keyFunc(header, claims)
+	}
+	if len(a.secret) == 0 {
+		return nil, errors.New("shared-secret authentication is disabled")
+	}
+	if !strings.EqualFold(header.Alg, "HS256") {
+		return nil, fmt.Errorf("expected HS256 token, got %s", header.Alg)
+	}
+	return &KeySpec{Algorithm: "HS256", Secret: a.secret}, nil
+}
+
+func verifyHMACSignature(unsigned, signatureSegment string, secret []byte) error {
 	signature, err := base64.RawURLEncoding.DecodeString(signatureSegment)
 	if err != nil {
 		return fmt.Errorf("invalid token signature: %w", err)
 	}
-	mac := hmac.New(sha256.New, a.secret)
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(unsigned))
 	expected := mac.Sum(nil)
 	if !hmac.Equal(signature, expected) {
+		return errors.New("invalid token signature")
+	}
+	return nil
+}
+
+func verifyEd25519Signature(unsigned, signatureSegment string, publicKey []byte) error {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return errors.New("invalid Ed25519 public key length")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(signatureSegment)
+	if err != nil {
+		return fmt.Errorf("invalid token signature: %w", err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), []byte(unsigned), signature) {
 		return errors.New("invalid token signature")
 	}
 	return nil

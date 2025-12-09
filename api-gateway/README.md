@@ -14,15 +14,22 @@ Follow these steps the first time you spin up the stack:
 1. **Generate the admin Ed25519 keypair** (used to sign VCs and populate `ADMIN_PUBLIC_KEY`).
    ```bash
    openssl genpkey -algorithm Ed25519 -out admin_ed25519_sk.pem
+   
    openssl pkey -in admin_ed25519_sk.pem -pubout -outform DER | tail -c 32 | base64 > admin_public_key.b64
    ```
    Copy the single line from `admin_public_key.b64` into `.env` as `ADMIN_PUBLIC_KEY=...`. Keep `admin_ed25519_sk.pem` safe—you will use it to sign VCs.
 
-2. **Prepare trainer MSP folders.** For every node that might participate, create a directory under `organizations/peerOrganizations/org1.nebula.com/users/<fabric-client-id>/msp`. The `<fabric-client-id>` must match `trainer-<nodeId>` once lowercased and sanitized. You can either:
-   - Copy one of the sample users (e.g., `User1@org1.nebula.com`) and rename the folder, or
-   - Enroll a real identity via Fabric CA and place the resulting `msp/` structure there.
+2. **Prepare trainer identities.** For every node that might participate:
+   - Create an MSP folder under `organizations/peerOrganizations/org1.nebula.com/users/<fabric-client-id>/msp`. The `<fabric-client-id>` must match `trainer-<nodeId>` once lowercased and sanitized (copy one of the sample users or enroll via Fabric CA).
+   - Generate an Ed25519 keypair that the trainer will use for runtime JWTs **and** as the `public_key` stored on-chain:
+     ```bash
+     openssl genpkey -algorithm Ed25519 -out trainer-node-001_sk.pem
 
-3. **Issue a VC for each trainer.** Build the helper tool and sign the credential JSON with the admin private key:
+     openssl pkey -in trainer-node-001_sk.pem -pubout -outform DER | tail -c 32 | base64 > trainer-node-001_public_key.b64
+     ```
+     The base64 string goes into the `/auth/register-trainer` payload. Keep the private key PEM safe—it will be referenced as `TRAINER_PRIVATE_KEY` when minting JWTs.
+
+3. **Admin issues a VC for each trainer.** Build the helper tool and sign the credential JSON with the admin private key (`admin_ed25519_sk.pem`). The admin hands this signed VC to the trainer, who will include it during registration:
    ```bash
    cd api-gateway/api
    go build ./cmd/vctool
@@ -42,12 +49,9 @@ Follow these steps the first time you spin up the stack:
    ```
    The output file already contains the canonical JSON plus the `signature` field.
 
-4. **Generate a JWT for testing.** The gateway accepts HS256-signed tokens with `sub`, `role`, and `exp`. Update `jwt.js` in the repo (set `SECRET` and the payload claims to match your node) and run:
-   ```bash
-   cd api-gateway
-   AUTH_JWT_SECRET="super-secret" node jwt.js
-   ```
-   The script prints a ready-to-use token that you can drop into the `Authorization: Bearer ...` header.
+4. **Generate JWTs for registration and runtime.**
+   - **Trainer registration:** the trainer signs an HS256 JWT using the shared `AUTH_JWT_SECRET`. Set `sub` to the trainer identifier (e.g., `trainer-node-001`) and run `JWT_ALG=HS256 AUTH_JWT_SECRET="super-secret" node jwt.js`. This tells the gateway which subject to associate with the Fabric identity.
+   - **Runtime APIs:** the trainer signs Ed25519 JWTs using their private key, keeping the same `sub` as above so the gateway can look up the stored enrollment. Run `JWT_ALG=EdDSA TRAINER_PRIVATE_KEY=/path/to/trainer-node-001_sk.pem node jwt.js`. The output is the `Authorization: Bearer ...` header for `/data/commit` and `/data/<id>`.
 
 5. **Start the stack.**
    ```bash
@@ -72,7 +76,7 @@ Stop with `docker compose down -v`. If you do not want to export variables manua
 | `ORDERER_TLS_CA` | `/organizations/ordererOrganizations/nebula.com/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem` | TLS CA used when invoking the orderer. |
 | `PEER_ENDPOINTS` | `peer0=peer0.org1.nebula.com:7051,peer1=...,peer2=...` | CSV map of peer name → address. The gateway picks `DEFAULT_PEER` for all transactions. |
 | `DEFAULT_PEER` | `peer0` | Peer used for submits/queries. |
-| `AUTH_JWT_SECRET` | _(required)_ | Shared HS256 secret that signs runtime JWTs. |
+| `AUTH_JWT_SECRET` | _(required)_ | Shared HS256 secret used to protect the `/auth/register-trainer` endpoint. Runtime APIs require per-trainer Ed25519 JWTs. |
 | `ADMIN_PUBLIC_KEY` | _(required)_ | Base64-encoded Ed25519 public key used to verify VC signatures. |
 | `TRAINER_DB_PATH` | `/data/trainers.json` | Location on disk where the gateway remembers enrolled trainers. Mount `./data:/data` (already configured) for persistence. |
 | `GATEWAY_JOB_ID` | empty | Optional job identifier – if set, the VC `job_id` must match this value. |
@@ -89,7 +93,7 @@ Stop with `docker compose down -v`. If you do not want to export variables manua
    - Maps the JWT subject to a Fabric wallet identity using the rule `trainer-<nodeId>` (non-alphanumeric characters collapse to `-`). The MSP material must live under `${ORG_CRYPTO_PATH}/users/<fabric-id>/msp`.
    - Calls the Fabric chaincode function `RegisterTrainer(did, nodeId, vcHash, publicKey)` signed by that identity.
    - Persists `{jwt_sub, fabric_client_id, nodeId, vc_hash, did, public_key}` inside `TRAINER_DB_PATH`.
-3. **Layer 2 (runtime checks):** `POST /data/commit` and `GET /data/<id>` first validate the JWT, then look up the stored enrollment. The Fabric transactions are also signed with that trainer identity, so the chaincode performs an additional whitelist check using the caller’s `clientID` before mutating ledger state. A stolen JWT alone is not enough to bypass the Fabric-level authorization.
+3. **Layer 2 (runtime checks):** `POST /data/commit` and `GET /data/<id>` first validate the JWT, then look up the stored enrollment. The JWT signature must be Ed25519/`EdDSA` using the same public key supplied at registration. After that the Fabric transaction is signed with the trainer’s MSP, and the chaincode enforces the on-chain whitelist. A stolen JWT alone is not enough to bypass authorization—you also need the Fabric MSP material.
 
 ## HTTP API
 
@@ -100,6 +104,7 @@ Base URL: `http://localhost:9000`
 ```
 GET /health
 ```
+`public_key` must be the base64-encoded 32-byte Ed25519 public key generated in step 2 (the same key used for JWT signing).
 
 Response:
 
@@ -122,7 +127,7 @@ Content-Type: application/json
 {
   "did": "did:nebula:hospitalA-node001",
   "nodeId": "trainer-node-001",
-  "public_key": "<trainer public key base64 or hex>",
+  "public_key": "<trainer public key base64>",
   "vc": { ... signed VC JSON ... }
 }
 ```
