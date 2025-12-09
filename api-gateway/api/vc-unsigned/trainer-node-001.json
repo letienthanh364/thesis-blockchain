@@ -1,0 +1,8 @@
+{
+    "issuer": "did:nebula:admin001",
+    "subject": "did:nebula:hospitalA-node001",
+    "job_id": "job_2025_heart_model",
+    "valid_from": "2025-12-01T00:00:00Z",
+    "valid_until": "2026-12-31T00:00:00Z",
+    "permissions": ["train", "commit"]
+}

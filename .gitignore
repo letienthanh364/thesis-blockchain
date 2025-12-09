@@ -35,3 +35,8 @@ install-fabric.sh
 
 .env
 jwt.js
+# Local secret material (admin/trainer keys, signed VCs, etc.)
+keys/
+api-gateway/keys/
+*.pem
+*.b64

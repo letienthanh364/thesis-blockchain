@@ -1,0 +1,11 @@
+[
+  {
+    "jwt_sub": "admin-node",
+    "fabric_client_id": "trainer-node-001",
+    "did": "did:nebula:hospitalA-node001",
+    "node_id": "trainer-node-001",
+    "vc_hash": "12cc0ca4602121e823c3738a5a19b9520526c854b685262b4d297d864c5420e4",
+    "public_key": "3aa099e290ebf26fd9bdcdfc1dc582ec80971d870c90860ca69dab9ec03b4953",
+    "registered_at": "2025-12-09T01:15:49Z"
+  }
+]
