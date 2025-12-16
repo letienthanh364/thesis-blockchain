@@ -18,33 +18,28 @@ Follow these steps the first time you spin up the stack:
    `AUTH_JWT_SECRET` secures `/auth/register-trainer`. `ADMIN_PUBLIC_KEY` must match the base64 Ed25519 key derived from your admin private key. All other entries already match the defaults used by `docker-compose.yaml`.
 
 1. **Seed Fabric MSP artifacts.**
-   - If `./organizations` already contains MSP folders (default clone), skip.
-   - To regenerate from scratch:
-     - **Option A – cryptogen:**
-       ```bash
-       cd api-gateway
-       cryptogen generate --config=crypto-config.yaml --output=organizations
-       ```
-     - **Option B – Fabric CA:** reuse the CA flow described later.
-       1. Start CA:
-          ```bash
-          docker run -d --name ca-org1.nebula.com -p 7054:7054 -v $PWD/organizations/peerOrganizations/org1.nebula.com/ca:/etc/hyperledger/fabric-ca-server/ca -v $PWD/organizations/peerOrganizations/org1.nebula.com/tlsca:/etc/hyperledger/fabric-ca-server/tlsca hyperledger/fabric-ca:1.5 sh -c 'fabric-ca-server start -b admin:adminpw --ca.name ca-org1 --port 7054'
-          ```
-       2. Enroll admin:
-          ```bash
-          export FABRIC_CA_CLIENT_HOME=$PWD/organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com
-          fabric-ca-client enroll \
-            -u http://admin:adminpw@localhost:7054 \
-            --caname ca-org1 \
-            -M $FABRIC_CA_CLIENT_HOME/msp
-          ```
-       3. Enroll trainers:
-          ```bash
-          node scripts/enroll-trainer-identities.js \
-            --ca-url http://localhost:7054 \
-            --ca-name ca-org1 \
-            --tls-cert organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com/msp/cacerts/localhost-7054-ca-org1.pem
-          ```
+   - If `./organizations`, `./system-genesis-block`, and `./channel-artifacts` already contain valid material (default clone), skip this step.
+   - For a clean slate remove the existing folders and regenerate everything with `cryptogen` and `configtxgen` **before** running Docker Compose:
+     ```bash
+     cd api-gateway
+     rm -rf organizations system-genesis-block channel-artifacts
+
+     cryptogen generate --config=crypto-config.yaml --output=organizations
+
+     export FABRIC_CFG_PATH=$PWD/configtx
+     mkdir -p system-genesis-block channel-artifacts
+
+     configtxgen -profile NebulaGenesis -channelID system-channel \
+       -outputBlock system-genesis-block/genesis.block
+
+     configtxgen -profile NebulaChannel -channelID nebulachannel \
+       -outputCreateChannelTx channel-artifacts/nebula-channel.tx
+
+     configtxgen -profile NebulaChannel -channelID nebulachannel \
+       -asOrg Org1MSP \
+       -outputAnchorPeersUpdate channel-artifacts/Org1MSPanchors.tx
+     ```
+     These commands repopulate the MSP folders and recreate the genesis/channel transactions consumed by `docker-compose.yaml`.
 
 2. **Generate the admin Ed25519 keypair** (used to sign VCs and populate `ADMIN_PUBLIC_KEY`).
    ```bash

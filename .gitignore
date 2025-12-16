@@ -44,15 +44,20 @@ api-gateway/nodes-setup/*
 !api-gateway/nodes-setup/nodes/
 !api-gateway/nodes-setup/nodes/**
 
+# Generated network material
+# api-gateway/organizations/
+# api-gateway/system-genesis-block/
+# api-gateway/channel-artifacts
+
 # Fabric CA runtime artifacts and generated MSPs
-api-gateway/organizations/fabric-ca/
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/fabric-ca-client-config.yaml
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/trainer-node-*/
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/tls/
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/IssuerPublicKey
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/IssuerRevocationPublicKey
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/keystore/**
-api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/signcerts/**
+# api-gateway/organizations/fabric-ca/
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/fabric-ca-client-config.yaml
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/trainer-node-*/
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/tls/
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/IssuerPublicKey
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/IssuerRevocationPublicKey
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/keystore/**
+# api-gateway/organizations/peerOrganizations/org1.nebula.com/users/*/msp/signcerts/**
 
 # Gateway runtime data
 api-gateway/data/trainers.json
