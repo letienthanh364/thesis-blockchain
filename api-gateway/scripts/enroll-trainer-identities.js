@@ -9,11 +9,14 @@
  * host. Customize the CA URL, TLS cert, admin home, etc. with the provided
  * flags. Secrets default to "<trainerId>pw".
  *
+ * Notable flags:
+ *   --canonical-ca-cert <path|skip>   Copy this CA cert into each trainer MSP.
+ *
  * Example:
  *   node scripts/enroll-trainer-identities.js \
- *     --ca-url https://localhost:7054 \
+ *     --ca-url http://localhost:7054 \
  *     --ca-name ca-org1 \
- *     --tls-cert organizations/peerOrganizations/org1.nebula.com/ca/ca.org1.nebula.com-cert.pem
+ *     --tls-cert organizations/peerOrganizations/org1.nebula.com/msp/cacerts/ca.org1.nebula.com-cert.pem
  */
 
 const fs = require('fs');
@@ -26,15 +29,14 @@ const DEFAULT_NODES_DIR = path.join(SETUP_DIR, 'nodes');
 const ORG_ROOT = path.join(ROOT, 'organizations', 'peerOrganizations', 'org1.nebula.com');
 const DEFAULT_USERS_DIR = path.join(ORG_ROOT, 'users');
 const DEFAULT_ADMIN_HOME = path.join(DEFAULT_USERS_DIR, 'Admin@org1.nebula.com');
-const DEFAULT_TLS_CERT = path.join(
+const DEFAULT_TLS_CERT = path.join(ORG_ROOT, 'tlsca', 'tlsca.org1.nebula.com-cert.pem');
+const DEFAULT_MSP_TEMPLATE = path.join(ORG_ROOT, 'msp', 'config.yaml');
+const DEFAULT_CANONICAL_CA_CERT = path.join(
   ORG_ROOT,
-  'users',
-  'Admin@org1.nebula.com',
   'msp',
   'cacerts',
-  'localhost-7054-ca-org1.pem',
+  'ca.org1.nebula.com-cert.pem',
 );
-const DEFAULT_MSP_TEMPLATE = path.join(ORG_ROOT, 'msp', 'config.yaml');
 
 const defaults = {
   nodesDir: DEFAULT_NODES_DIR,
@@ -42,7 +44,8 @@ const defaults = {
   adminHome: DEFAULT_ADMIN_HOME,
   tlsCert: DEFAULT_TLS_CERT,
   mspTemplate: DEFAULT_MSP_TEMPLATE,
-  caURL: 'https://localhost:7054',
+  canonicalCACert: DEFAULT_CANONICAL_CA_CERT,
+  caURL: 'http://localhost:7054',
   caName: 'ca-org1',
   secretTemplate: '{trainerId}pw',
   skipRegister: false,
@@ -70,6 +73,15 @@ function parseArgs(argv) {
       case '--msp-template':
         opts.mspTemplate = path.resolve(argv[++i]);
         break;
+      case '--canonical-ca-cert': {
+        const value = argv[++i];
+        if (!value || value.toLowerCase() === 'none' || value.toLowerCase() === 'skip') {
+          opts.canonicalCACert = null;
+        } else {
+          opts.canonicalCACert = path.resolve(value);
+        }
+        break;
+      }
       case '--ca-url':
         opts.caURL = argv[++i];
         break;
@@ -205,6 +217,8 @@ function enrollTrainer(trainerId, secret, opts) {
   const enrollURL = `${endpoint.protocol}//${encodeURIComponent(trainerId)}:${encodeURIComponent(secret)}@${endpoint.host}`;
   const mspDir = path.join(opts.usersDir, trainerId, 'msp');
   if (!opts.force && fs.existsSync(mspDir) && fs.readdirSync(mspDir).length > 0) {
+    ensureConfigTemplate(mspDir, opts, false);
+    syncCanonicalCACert(mspDir, opts, false);
     return { status: 'exists', mspDir };
   }
   fs.mkdirSync(mspDir, { recursive: true });
@@ -220,10 +234,8 @@ function enrollTrainer(trainerId, secret, opts) {
     opts.tlsCert,
   ];
   runFabricCA(args, opts);
-  if (opts.mspTemplate) {
-    ensureFile(opts.mspTemplate, 'MSP template');
-    fs.copyFileSync(opts.mspTemplate, path.join(mspDir, 'config.yaml'));
-  }
+  ensureConfigTemplate(mspDir, opts, true);
+  syncCanonicalCACert(mspDir, opts, true);
   return { status: 'enrolled', mspDir };
 }
 
@@ -258,6 +270,33 @@ function enrollTLS(trainerId, secret, opts) {
   runFabricCA(args, opts);
   finalizeTLSArtifacts(tlsDir);
   return { status: 'enrolled', tlsDir };
+}
+
+function ensureConfigTemplate(mspDir, opts, overwrite) {
+  if (!opts.mspTemplate) {
+    return;
+  }
+  ensureFile(opts.mspTemplate, 'MSP template');
+  const destination = path.join(mspDir, 'config.yaml');
+  if (!overwrite && fs.existsSync(destination)) {
+    return;
+  }
+  fs.copyFileSync(opts.mspTemplate, destination);
+}
+
+function syncCanonicalCACert(mspDir, opts, overwrite) {
+  if (!opts.canonicalCACert) {
+    return;
+  }
+  ensureFile(opts.canonicalCACert, 'Canonical CA cert');
+  const caDir = path.join(mspDir, 'cacerts');
+  fs.mkdirSync(caDir, { recursive: true });
+  const desiredName = path.basename(opts.canonicalCACert);
+  const destination = path.join(caDir, desiredName);
+  if (!overwrite && fs.existsSync(destination)) {
+    return;
+  }
+  fs.copyFileSync(opts.canonicalCACert, destination);
 }
 
 function finalizeTLSArtifacts(tlsDir) {

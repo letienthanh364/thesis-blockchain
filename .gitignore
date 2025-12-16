@@ -40,14 +40,15 @@ api-gateway/keys/
 api-gateway/logs/
 *.pem
 *.b64
+api-gateway/admin.jwt
 api-gateway/nodes-setup/*
 !api-gateway/nodes-setup/nodes/
 !api-gateway/nodes-setup/nodes/**
 
 # Generated network material
-# api-gateway/organizations/
-# api-gateway/system-genesis-block/
-# api-gateway/channel-artifacts
+api-gateway/organizations/
+api-gateway/system-genesis-block/
+api-gateway/channel-artifacts
 
 # Fabric CA runtime artifacts and generated MSPs
 # api-gateway/organizations/fabric-ca/
