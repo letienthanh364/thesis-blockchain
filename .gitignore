@@ -40,9 +40,9 @@ api-gateway/keys/
 api-gateway/logs/
 *.pem
 *.b64
-nodes-setup/
-api-gateway/nodes-setup/
-api-gateway/nodes-setup/**
+api-gateway/nodes-setup/*
+!api-gateway/nodes-setup/nodes/
+!api-gateway/nodes-setup/nodes/**
 
 # Fabric CA runtime artifacts and generated MSPs
 api-gateway/organizations/fabric-ca/

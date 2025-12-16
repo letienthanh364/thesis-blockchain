@@ -1,7 +1,5 @@
 # API Gateway Stack
 
-This directory clones the former `nebula-gateway` deployment and trims it down to the two services we now care about:
-
 1. A Verifiable Credential (VC)–aware enrollment endpoint that maps runtime JWTs to Fabric wallet identities and registers them on-chain.
 2. A tiny data-service with only two APIs – commit arbitrary payloads and retrieve them later using the ID returned at commit time.
 
@@ -28,7 +26,8 @@ Follow these steps the first time you spin up the stack:
    Copy the single line from `admin_public_key.b64` into `.env` as `ADMIN_PUBLIC_KEY=...`. Keep `admin_ed25519_sk.pem` safe—you will use it to sign VCs.
 
 2. **Prepare trainer identities (automated).**
-   - Each node definition now lives under `nodes-setup/nodes/node_X.json`. To generate Ed25519 keypairs, unsigned VC payloads, and both JWT flavors for *all* trainers, run:
+   - Each trainer definition lives under `nodes-setup/nodes/node_X.json`. Update these files to change the list of trainer nodes or tweak per-node metadata (dataset parameters, topology hints, etc.). The `node_id` determines the trainer identifier used throughout the tooling (`trainer-node-XXX` naming is derived automatically).
+   - To generate Ed25519 keypairs, unsigned VC payloads, and both JWT flavors for *all* trainers, run:
      ```bash
      cd api-gateway
      # ensure AUTH_JWT_SECRET is exported or pass --auth-secret explicitly
