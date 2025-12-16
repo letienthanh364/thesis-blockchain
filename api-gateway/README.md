@@ -17,7 +17,36 @@ Follow these steps the first time you spin up the stack:
    ```
    `AUTH_JWT_SECRET` secures `/auth/register-trainer`. `ADMIN_PUBLIC_KEY` must match the base64 Ed25519 key derived from your admin private key. All other entries already match the defaults used by `docker-compose.yaml`.
 
-1. **Generate the admin Ed25519 keypair** (used to sign VCs and populate `ADMIN_PUBLIC_KEY`).
+1. **Seed Fabric MSP artifacts.**
+   - If `./organizations` already contains MSP folders (default clone), skip.
+   - To regenerate from scratch:
+     - **Option A – cryptogen:**
+       ```bash
+       cd api-gateway
+       cryptogen generate --config=crypto-config.yaml --output=organizations
+       ```
+     - **Option B – Fabric CA:** reuse the CA flow described later.
+       1. Start CA:
+          ```bash
+          docker run -d --name ca-org1.nebula.com -p 7054:7054 -v $PWD/organizations/peerOrganizations/org1.nebula.com/ca:/etc/hyperledger/fabric-ca-server/ca -v $PWD/organizations/peerOrganizations/org1.nebula.com/tlsca:/etc/hyperledger/fabric-ca-server/tlsca hyperledger/fabric-ca:1.5 sh -c 'fabric-ca-server start -b admin:adminpw --ca.name ca-org1 --port 7054'
+          ```
+       2. Enroll admin:
+          ```bash
+          export FABRIC_CA_CLIENT_HOME=$PWD/organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com
+          fabric-ca-client enroll \
+            -u http://admin:adminpw@localhost:7054 \
+            --caname ca-org1 \
+            -M $FABRIC_CA_CLIENT_HOME/msp
+          ```
+       3. Enroll trainers:
+          ```bash
+          node scripts/enroll-trainer-identities.js \
+            --ca-url http://localhost:7054 \
+            --ca-name ca-org1 \
+            --tls-cert organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com/msp/cacerts/localhost-7054-ca-org1.pem
+          ```
+
+2. **Generate the admin Ed25519 keypair** (used to sign VCs and populate `ADMIN_PUBLIC_KEY`).
    ```bash
    openssl genpkey -algorithm Ed25519 -out admin_ed25519_sk.pem
    
@@ -25,7 +54,7 @@ Follow these steps the first time you spin up the stack:
    ```
    Copy the single line from `admin_public_key.b64` into `.env` as `ADMIN_PUBLIC_KEY=...`. Keep `admin_ed25519_sk.pem` safe—you will use it to sign VCs.
 
-2. **Prepare trainer identities (automated).**
+3. **Prepare trainer identities (automated).**
    - Each trainer definition lives under `nodes-setup/nodes/node_X.json`. Update these files to change the list of trainer nodes or tweak per-node metadata (dataset parameters, topology hints, etc.). The `node_id` determines the trainer identifier used throughout the tooling (`trainer-node-XXX` naming is derived automatically).
    - To generate Ed25519 keypairs, unsigned VC payloads, and both JWT flavors for *all* trainers, run:
      ```bash
@@ -44,7 +73,7 @@ Follow these steps the first time you spin up the stack:
    - Make sure each trainer still has MSP material under `organizations/peerOrganizations/org1.nebula.com/users/<fabric-client-id>/msp` where `<fabric-client-id>` matches the `trainer-xxx` naming convention.
    - **If you prefer Fabric CA over copying MSPs manually**, bring up a CA server and enroll the admin once:
      ```bash
-     # 2a. start the CA container (run after docker compose is up)
+     # 3a. start the CA container (run before docker compose up)
      docker run -d --name ca-org1.nebula.com \
        -p 7054:7054 \
        -v $PWD/organizations/peerOrganizations/org1.nebula.com/ca:/etc/hyperledger/fabric-ca-server/ca \
@@ -52,31 +81,32 @@ Follow these steps the first time you spin up the stack:
        hyperledger/fabric-ca:1.5 \
        sh -c 'fabric-ca-server start -b admin:adminpw --ca.name ca-org1 --port 7054'
 
-     # 2b. enroll the CA admin (one time)
+     # 3b. enroll the CA admin (one time)
      export FABRIC_CA_CLIENT_HOME=$PWD/organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com
      fabric-ca-client enroll \
        -u http://admin:adminpw@localhost:7054 \
        --caname ca-org1 \
        -M $FABRIC_CA_CLIENT_HOME/msp
      ```
-     Then enroll all trainers automatically:
+      Then enroll all trainers automatically:
      ```bash
      node scripts/enroll-trainer-identities.js \
        --ca-url http://localhost:7054 \
-       --ca-name ca-org1
+       --ca-name ca-org1 \
+       --tls-cert organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com/msp/cacerts/localhost-7054-ca-org1.pem
      ```
      This registers each trainer (default secret `<trainerId>pw`), writes MSP material to `organizations/.../users/<trainer-id>/msp`, and provisions TLS certs under `.../users/<trainer-id>/tls`. Run it after the CA is up; pass `--force` to re-enroll or `--secret-template` if you need custom passwords. Stop the CA later with `docker rm -f ca-org1.nebula.com` if you no longer need it.
 
-3. **Admin issues signed VCs.** Use the helper script to sign every unsigned VC with the admin Ed25519 key:
+4. **Admin issues signed VCs.** Use the helper script to sign every unsigned VC with the admin Ed25519 key (`admin_ed25519_sk.pem` generated in step 2):
    ```bash
    cd api-gateway
    node scripts/sign-trainer-vcs.js \
-     --key nodes-setup/keys/admin_ed25519_sk.pem \
+     --key admin_ed25519_sk.pem \
      --force   # optional overwrite
    ```
    Signed credentials land in `nodes-setup/vc-signed/<trainer-id>_vc.json`. Give each trainer its matching signed VC so it can call `/auth/register-trainer`.
 
-4. **Prepare a bulk-registration payload (optional but recommended).** After the network is up and the signed VCs exist, stitch the artifacts together:
+5. **Prepare a bulk-registration payload (optional but recommended).** After the network is up and the signed VCs exist, stitch the artifacts together:
    ```bash
    cd api-gateway
    node scripts/build-bulk-register-payload.js \
@@ -86,11 +116,11 @@ Follow these steps the first time you spin up the stack:
    ```
    The template accepts `{trainerId}`, `{nodeId}`, and `{trainerSeq}` (001, 002, …). The resulting JSON array can be POSTed to `/auth/register-trainers` once the server is running.
 
-5. **Generate JWTs for registration and runtime.**
+6. **Generate JWTs for registration and runtime.**
    - **Trainer registration:** HS256 JWT using the shared `AUTH_JWT_SECRET`. You can re-run `node jwt.js --sub trainer-node-001` with `JWT_ALG=HS256` and the secret exported, or reuse the pre-generated token from `nodes-setup/tokens/*_registration.jwt`.
    - **Runtime APIs:** Ed25519 JWT signed with the trainer’s private key. Again you can re-run `node jwt.js --sub trainer-node-001` with `JWT_ALG=EdDSA TRAINER_PRIVATE_KEY=/path/to/sk.pem`, or reuse `*_runtime.jwt`. Keep the private key PEM on the trainer host.
 
-5. **Start the stack.**
+7. **Start the stack.**
    ```bash
    cd api-gateway
    export AUTH_JWT_SECRET="super-secret"
@@ -278,3 +308,4 @@ The bootstrap CLI now packages this chaincode under the label `gateway` so the A
 - **Smoke test:** after the stack is up, call `GET /health`, then register a trainer with the VC JSON and JWT you prepared, and finally hit `POST /data/commit` followed by `GET /data/<id>` to ensure the ledger roundtrip works end-to-end.
 
 Everything still runs behind the single compose file, so the workflow stays the same as `nebula-gateway` while giving you a trimmed, VC-hardened API surface.
+> **Note:** The Fabric containers mount `./organizations/**` from your host. If you cloned a trimmed repo or wiped that directory, regenerate MSP material (via `cryptogen` or the CA flow above) *before* running `docker compose up`; otherwise the peers/orderer will crash with “could not load a valid signer certificate.”

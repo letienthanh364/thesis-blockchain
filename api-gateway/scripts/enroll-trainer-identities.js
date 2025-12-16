@@ -26,7 +26,14 @@ const DEFAULT_NODES_DIR = path.join(SETUP_DIR, 'nodes');
 const ORG_ROOT = path.join(ROOT, 'organizations', 'peerOrganizations', 'org1.nebula.com');
 const DEFAULT_USERS_DIR = path.join(ORG_ROOT, 'users');
 const DEFAULT_ADMIN_HOME = path.join(DEFAULT_USERS_DIR, 'Admin@org1.nebula.com');
-const DEFAULT_TLS_CERT = path.join(ORG_ROOT, 'ca', 'ca.org1.nebula.com-cert.pem');
+const DEFAULT_TLS_CERT = path.join(
+  ORG_ROOT,
+  'users',
+  'Admin@org1.nebula.com',
+  'msp',
+  'cacerts',
+  'localhost-7054-ca-org1.pem',
+);
 const DEFAULT_MSP_TEMPLATE = path.join(ORG_ROOT, 'msp', 'config.yaml');
 
 const defaults = {
