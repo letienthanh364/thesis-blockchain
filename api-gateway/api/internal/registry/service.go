@@ -24,10 +24,11 @@ type Service struct {
 
 // RegisterInput captures the sanitized HTTP payload.
 type RegisterInput struct {
-	DID       string
-	NodeID    string
-	VC        json.RawMessage
-	PublicKey string
+	DID        string
+	NodeID     string
+	VC         json.RawMessage
+	PublicKey  string
+	JWTSubject string
 }
 
 // NewService wires a registry service instance.
@@ -39,6 +40,13 @@ func NewService(cfg *common.Config, fabric *common.FabricClient, store *Store, v
 func (s *Service) Register(ctx context.Context, authCtx *common.AuthContext, input RegisterInput) (*TrainerRecord, error) {
 	if authCtx == nil {
 		return nil, common.NewStatusError(http.StatusUnauthorized, "authentication context missing")
+	}
+	jwtSub := strings.TrimSpace(input.JWTSubject)
+	if jwtSub == "" {
+		jwtSub = strings.TrimSpace(authCtx.Subject)
+	}
+	if jwtSub == "" {
+		return nil, common.NewStatusError(http.StatusBadRequest, "jwt subject is required")
 	}
 	did := strings.TrimSpace(input.DID)
 	if did == "" {
@@ -72,7 +80,7 @@ func (s *Service) Register(ctx context.Context, authCtx *common.AuthContext, inp
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	record := &TrainerRecord{
-		JWTSub:         authCtx.Subject,
+		JWTSub:         jwtSub,
 		FabricClientID: fabricID,
 		DID:            did,
 		NodeID:         nodeID,

@@ -35,6 +35,30 @@ Follow these steps the first time you spin up the stack:
      - JWTs (optional): `nodes-setup/tokens/<trainer-id>_{registration,runtime}.jwt`
    - Copy the private key PEM (and optional runtime JWT) to the *actual machine* that will run that trainer node. These files must never be checked in or shared broadly; treat `nodes-setup/` as a staging area.
    - Make sure each trainer still has MSP material under `organizations/peerOrganizations/org1.nebula.com/users/<fabric-client-id>/msp` where `<fabric-client-id>` matches the `trainer-xxx` naming convention.
+   - **If you prefer Fabric CA over copying MSPs manually**, bring up a CA server and enroll the admin once:
+     ```bash
+     # 2a. start the CA container (run after docker compose is up)
+     docker run -d --name ca-org1.nebula.com \
+       -p 7054:7054 \
+       -v $PWD/organizations/peerOrganizations/org1.nebula.com/ca:/etc/hyperledger/fabric-ca-server/ca \
+       -v $PWD/organizations/peerOrganizations/org1.nebula.com/tlsca:/etc/hyperledger/fabric-ca-server/tlsca \
+       hyperledger/fabric-ca:1.5 \
+       sh -c 'fabric-ca-server start -b admin:adminpw --ca.name ca-org1 --port 7054'
+
+     # 2b. enroll the CA admin (one time)
+     export FABRIC_CA_CLIENT_HOME=$PWD/organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com
+     fabric-ca-client enroll \
+       -u http://admin:adminpw@localhost:7054 \
+       --caname ca-org1 \
+       -M $FABRIC_CA_CLIENT_HOME/msp
+     ```
+     Then enroll all trainers automatically:
+     ```bash
+     node scripts/enroll-trainer-identities.js \
+       --ca-url http://localhost:7054 \
+       --ca-name ca-org1
+     ```
+     This registers each trainer (default secret `<trainerId>pw`), writes MSP material to `organizations/.../users/<trainer-id>/msp`, and provisions TLS certs under `.../users/<trainer-id>/tls`. Run it after the CA is up; pass `--force` to re-enroll or `--secret-template` if you need custom passwords. Stop the CA later with `docker rm -f ca-org1.nebula.com` if you no longer need it.
 
 3. **Admin issues signed VCs.** Use the helper script to sign every unsigned VC with the admin Ed25519 key:
    ```bash
@@ -45,7 +69,17 @@ Follow these steps the first time you spin up the stack:
    ```
    Signed credentials land in `nodes-setup/vc-signed/<trainer-id>_vc.json`. Give each trainer its matching signed VC so it can call `/auth/register-trainer`.
 
-4. **Generate JWTs for registration and runtime.**
+4. **Prepare a bulk-registration payload (optional but recommended).** After the network is up and the signed VCs exist, stitch the artifacts together:
+   ```bash
+   cd api-gateway
+   node scripts/build-bulk-register-payload.js \
+     --did-template did:nebula:hospitalA-node{trainerSeq} \
+     --output nodes-setup/bulk-register.json \
+     --force   # overwrite existing file
+   ```
+   The template accepts `{trainerId}`, `{nodeId}`, and `{trainerSeq}` (001, 002, …). The resulting JSON array can be POSTed to `/auth/register-trainers` once the server is running.
+
+5. **Generate JWTs for registration and runtime.**
    - **Trainer registration:** HS256 JWT using the shared `AUTH_JWT_SECRET`. You can re-run `node jwt.js --sub trainer-node-001` with `JWT_ALG=HS256` and the secret exported, or reuse the pre-generated token from `nodes-setup/tokens/*_registration.jwt`.
    - **Runtime APIs:** Ed25519 JWT signed with the trainer’s private key. Again you can re-run `node jwt.js --sub trainer-node-001` with `JWT_ALG=EdDSA TRAINER_PRIVATE_KEY=/path/to/sk.pem`, or reuse `*_runtime.jwt`. Keep the private key PEM on the trainer host.
 
@@ -148,6 +182,31 @@ Failures:
 - Invalid/missing JWT → `401`.
 - VC signature mismatch, outside validity window, or DID/job mismatch → `403`.
 - Fabric invocation error (missing Fabric identity, ledger failure) → `500`.
+
+### Bulk register trainers (admin only)
+
+```
+POST /auth/register-trainers
+Authorization: Bearer <ADMIN JWT>
+Content-Type: application/json
+
+[
+  {
+    "did": "did:nebula:hospitalA-node001",
+    "nodeId": "trainer-node-001",
+    "public_key": "...",
+    "vc": { ... }
+  },
+  {
+    "did": "did:nebula:hospitalA-node002",
+    "nodeId": "trainer-node-002",
+    "public_key": "...",
+    "vc": { ... }
+  }
+]
+```
+
+The admin token must carry `role=admin`. Each array element reuses the same schema as the single-trainer endpoint; you can optionally include `jwt_sub` or `subject` to specify the runtime JWT subject. If omitted, the gateway falls back to `nodeId`, then `did`. The response returns a list of per-trainer results, and the HTTP status becomes `207 Multi-Status` when at least one entry fails.
 
 ### Commit data
 
