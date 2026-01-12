@@ -95,7 +95,44 @@ func (s *Service) Register(ctx context.Context, authCtx *common.AuthContext, inp
 	if err := s.store.Save(record); err != nil {
 		return nil, err
 	}
+	if err := s.recordWhitelistEntry(ctx, record); err != nil {
+		return nil, err
+	}
 	return record, nil
+}
+
+// SyncWhitelist ensures every stored trainer record is mirrored on-chain.
+func (s *Service) SyncWhitelist(ctx context.Context) error {
+	records := s.store.All()
+	for _, record := range records {
+		if err := s.recordWhitelistEntry(ctx, record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) recordWhitelistEntry(ctx context.Context, record *TrainerRecord) error {
+	if record == nil {
+		return common.NewStatusError(http.StatusBadRequest, "trainer record is required")
+	}
+	args := []string{
+		"RecordWhitelistEntry",
+		record.JWTSub,
+		record.DID,
+		record.NodeID,
+		record.VCHash,
+		record.PublicKey,
+		record.RegisteredAt,
+	}
+	peerName := s.fabric.SelectPeer()
+	if peerName == "" {
+		return common.NewStatusError(http.StatusInternalServerError, "no fabric peers configured")
+	}
+	if err := s.fabric.InvokeChaincode(peerName, s.cfg.AdminIdentity, args); err != nil {
+		return err
+	}
+	return nil
 }
 
 func buildFabricClientID(nodeID string) string {

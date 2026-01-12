@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/nebula/api-gateway/internal/data"
 	"github.com/nebula/api-gateway/internal/models"
 	"github.com/nebula/api-gateway/internal/registry"
+	"github.com/nebula/api-gateway/internal/whitelist"
 )
 
 func main() {
@@ -38,12 +40,18 @@ func main() {
 	regSvc := registry.NewService(cfg, fabric, store, verifier)
 	dataSvc := data.NewService(cfg, fabric, store)
 	modelSvc := models.NewService(cfg, fabric, store)
+	whitelistSvc := whitelist.NewService(cfg, fabric)
+
+	if err := regSvc.SyncWhitelist(context.Background()); err != nil {
+		log.Fatalf("failed to sync trainer whitelist: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler(cfg))
 	registry.NewHTTPHandler(regSvc).RegisterRoutes(mux, auth)
 	data.NewHTTPHandler(dataSvc, store).RegisterRoutes(mux, auth)
 	models.NewHTTPHandler(modelSvc, store).RegisterRoutes(mux, auth)
+	whitelist.NewHTTPHandler(whitelistSvc).RegisterRoutes(mux, auth)
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -83,7 +83,7 @@ func (a *Authenticator) RequireAuthWithKeyFunc(keyFunc KeyFunc, next http.Handle
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authCtx, err := a.authenticateRequest(r, keyFunc)
 		if err != nil {
-			WriteErrorWithCode(w, http.StatusUnauthorized, err)
+			WriteErrorWithCode(w, http.StatusUnauthorized, ErrInvalidCredentials)
 			return
 		}
 		if len(allowedRoles) > 0 && !authCtx.Role.Allowed(allowedRoles...) {

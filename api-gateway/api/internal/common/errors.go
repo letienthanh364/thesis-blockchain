@@ -7,6 +7,7 @@ import (
 var (
 	ErrMissingAuthContext = errors.New("authentication context unavailable")
 	ErrMethodNotAllowed   = errors.New("method not allowed")
+	ErrInvalidCredentials = errors.New("invalid or missing credentials")
 )
 
 // StatusError conveys an HTTP response code alongside the error message.

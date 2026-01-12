@@ -2,6 +2,7 @@
 
 1. A Verifiable Credential (VC)–aware enrollment endpoint that maps runtime JWTs to Fabric wallet identities and registers them on-chain.
 2. A scoped model-reference API layered by “cluster”, “state”, and “nation” with commit/list/retrieve operations plus pagination, alongside the original generic data commit/retrieve helpers for ad-hoc payloads.
+3. A trainer whitelist feed so aggregators can fetch the canonical list of enrolled nodes straight from the ledger.
 
 `docker-compose.yaml` still provisions the entire Fabric network (orderer + 3 peers), the bootstrap CLI, the gateway CLI, and the HTTP server in a single command so you can spin everything up with one `docker compose up` just like the original stack.
 
@@ -162,7 +163,7 @@ Stop with `docker compose down -v`. If you do not want to export variables manua
 
 ## Authentication flow
 
-1. **Layer 1 (JWT):** every HTTP request supplies `Authorization: Bearer <token>`. Tokens carry `sub`, `role`, and `exp` claims and can be HS256 (shared secret) or EdDSA (per-trainer keys) depending on the endpoint. Runtime tokens may set `sub` to either the trainer’s `jwt_sub` or the DID string—they both resolve to the same enrollment now.
+1. **Layer 1 (JWT):** every HTTP request supplies `Authorization: Bearer <token>`. Tokens carry `sub`, `role`, and `exp` claims and can be HS256 (shared secret) or EdDSA (per-trainer keys) depending on the endpoint. Runtime tokens may set `sub` to either the trainer’s `jwt_sub` or the DID string—they both resolve to the same enrollment now. Admin/aggregator-only APIs (e.g., `/whitelist`) keep using HS256 tokens signed with the shared `AUTH_JWT_SECRET`.
    - The **registration token** proves the caller knows the shared bootstrap secret (`AUTH_JWT_SECRET`). Only this token is accepted on `/auth/register-trainer`.
    - The **runtime token** proves the caller controls the trainer-specific Ed25519 key registered earlier. These are required for `/data/*` APIs.
 2. **Layer 2 (VC enrollment):** before a node can call any runtime API it must invoke `POST /auth/register-trainer` once. During this call the gateway:
@@ -307,6 +308,7 @@ The previous asset-transfer sample was replaced with a purpose-built contract (`
 - `RegisterTrainer(did, nodeId, vcHash, publicKey)` → stores the trainer metadata keyed by the invoker’s Fabric `clientID`.
 - `CommitData(dataId, payload)` / `ReadData(dataId)` → legacy helpers for arbitrary payloads.
 - `CommitModel(dataId, layer, scopeId, payload)`, `ReadModel(dataId)`, and `ListModels(layer, scopeId, page, perPage)` → scoped model reference handling with pagination.
+- `RecordWhitelistEntry(jwtSub, did, nodeId, vcHash, publicKey, registeredAt)` / `ListWhitelist(page, perPage)` → mirrors the trainer whitelist keyed by JWT subject.
 - `IsTrainerAuthorized()` helper shared by the read/write functions.
 
 The bootstrap CLI now packages this chaincode under the label `gateway` so the API and Fabric stay in sync.
@@ -315,7 +317,7 @@ The bootstrap CLI now packages this chaincode under the label `gateway` so the A
 
 - **Chaincode:** bump `CHAINCODE_VERSION`/`CHAINCODE_SEQUENCE` and rerun `/scripts/bootstrap.sh` inside `gateway-cli`. Example: `docker exec gateway-cli bash -c 'CHAINCODE_VERSION=1.1 CHAINCODE_SEQUENCE=2 /scripts/bootstrap.sh'`.
 - **API:** `docker compose build api-gateway && docker compose up -d api-gateway`.
-- **Smoke test:** after the stack is up, call `GET /health`, register a trainer with the VC JSON and JWT you prepared, then hit `POST /cluster/models` (or state/nation) followed by `GET /cluster/models/<id>` to verify the layered endpoint. `POST /data/commit` and `GET /data/<id>` still work for ad-hoc payloads.
+- **Smoke test:** after the stack is up, call `GET /health`, register a trainer with the VC JSON and JWT you prepared, then hit `POST /cluster/models` (or state/nation) followed by `GET /cluster/models/<id>` to verify the layered endpoint. `POST /data/commit` / `GET /data/<id>` and `GET /whitelist` should all work to confirm the ledger + whitelist flow.
 
 Everything still runs behind the single compose file, so the workflow stays the same as `nebula-gateway` while giving you a trimmed, VC-hardened API surface.
 > **Note:** The Fabric containers mount `./organizations/**` from your host. If you cloned a trimmed repo or wiped that directory, regenerate MSP material (via `cryptogen` or the CA flow above) *before* running `docker compose up`; otherwise the peers/orderer will crash with “could not load a valid signer certificate.”
@@ -404,3 +406,36 @@ Response:
 ```
 
 Additional layers can be added server-side without changing the HTTP surface—new `/layer/models` routes are registered automatically.
+
+### Trainer whitelist
+
+```
+GET /whitelist?per_page=25&page=2
+Authorization: Bearer <admin-or-aggregator HS256 JWT>
+```
+
+- `page` defaults to `1`.
+- `per_page` defaults to `50`.
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "jwt_sub": "trainer-node-001",
+      "did": "did:nebula:trainer-node-001",
+      "node_id": "trainer-node-001",
+      "vc_hash": "1bc9...",
+      "public_key": "base64...",
+      "registered_at": "2025-01-02T03:04:05Z"
+    }
+  ],
+  "page": 2,
+  "per_page": 25,
+  "total": 87,
+  "has_more": true
+}
+```
+
+Every entry inside `data/trainers.json` is mirrored to the ledger at startup, and future registrations automatically append to that whitelist, so the endpoint above always returns the canonical trainer set. Only `admin` or `aggregator` JWT roles can call it.

@@ -111,6 +111,21 @@ func (s *Store) FindByJWTSub(jwtSub string) (*TrainerRecord, bool) {
 	return &clone, true
 }
 
+// All returns a snapshot of every trainer record.
+func (s *Store) All() []*TrainerRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*TrainerRecord, 0, len(s.byJWT))
+	for _, rec := range s.byJWT {
+		clone := *rec
+		list = append(list, &clone)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].JWTSub < list[j].JWTSub
+	})
+	return list
+}
+
 func (s *Store) lookupLocked(key string) *TrainerRecord {
 	if rec, ok := s.byJWT[key]; ok {
 		return rec
