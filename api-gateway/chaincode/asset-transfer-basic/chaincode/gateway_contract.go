@@ -54,6 +54,7 @@ type ModelRecord struct {
 	ID          string `json:"id"`
 	Layer       string `json:"layer"`
 	ScopeID     string `json:"scope_id"`
+	Round       int    `json:"round,omitempty"`
 	Owner       string `json:"owner"`
 	Payload     string `json:"payload"`
 	SubmittedAt string `json:"submitted_at"`
@@ -110,14 +111,15 @@ type NationConvergence struct {
 }
 
 const (
-	trainerPrefix      = "trainer:"
-	dataPrefix         = "data:"
-	modelPrefix        = "model:"
-	whitelistPrefix    = "whitelist:"
-	stateConvPrefix    = "conv:state:"
-	nationConvPrefix   = "conv:nation:"
-	clusterSuffix      = ":cluster:"
-	stateSummarySuffix = ":summary"
+	trainerPrefix         = "trainer:"
+	dataPrefix            = "data:"
+	modelPrefix           = "model:"
+	modelScopeRoundPrefix = "model_scope_round:"
+	whitelistPrefix       = "whitelist:"
+	stateConvPrefix       = "conv:state:"
+	nationConvPrefix      = "conv:nation:"
+	clusterSuffix         = ":cluster:"
+	stateSummarySuffix    = ":summary"
 )
 
 // InitLedger is present for compatibility with the bootstrap script.
@@ -225,6 +227,15 @@ func (c *GatewayContract) ReadData(ctx contractapi.TransactionContextInterface, 
 
 // CommitModel stores a model reference scoped to a layer/scope identifier.
 func (c *GatewayContract) CommitModel(ctx contractapi.TransactionContextInterface, dataID, layer, scopeID, payload string) (*ModelRecord, error) {
+	return c.commitModel(ctx, dataID, layer, scopeID, "", payload)
+}
+
+// CommitModelWithRound stores a model reference that is tied to a specific round within the scope.
+func (c *GatewayContract) CommitModelWithRound(ctx contractapi.TransactionContextInterface, dataID, layer, scopeID, round, payload string) (*ModelRecord, error) {
+	return c.commitModel(ctx, dataID, layer, scopeID, round, payload)
+}
+
+func (c *GatewayContract) commitModel(ctx contractapi.TransactionContextInterface, dataID, layer, scopeID, roundArg, payload string) (*ModelRecord, error) {
 	trainer, err := c.requireAuthorizedTrainer(ctx)
 	if err != nil {
 		return nil, err
@@ -241,10 +252,15 @@ func (c *GatewayContract) CommitModel(ctx contractapi.TransactionContextInterfac
 	if scope == "" {
 		return nil, errors.New("scope identifier is required")
 	}
+	round, err := parseRound(roundArg, false)
+	if err != nil {
+		return nil, err
+	}
 	record := &ModelRecord{
 		ID:          id,
 		Layer:       normalizedLayer,
 		ScopeID:     scope,
+		Round:       round,
 		Owner:       trainer.NodeID,
 		Payload:     payload,
 		SubmittedAt: time.Now().UTC().Format(time.RFC3339),
@@ -256,6 +272,12 @@ func (c *GatewayContract) CommitModel(ctx contractapi.TransactionContextInterfac
 	if err := ctx.GetStub().PutState(modelKey(id), bytes); err != nil {
 		return nil, err
 	}
+	if round > 0 {
+		indexKey := modelScopeRoundKey(normalizedLayer, scope, round)
+		if err := ctx.GetStub().PutState(indexKey, []byte(record.ID)); err != nil {
+			return nil, err
+		}
+	}
 	return record, nil
 }
 
@@ -264,6 +286,38 @@ func (c *GatewayContract) ReadModel(ctx contractapi.TransactionContextInterface,
 	if _, err := c.requireAuthorizedTrainer(ctx); err != nil {
 		return nil, err
 	}
+	return c.loadModel(ctx, dataID)
+}
+
+// ReadModelByScopeRound returns a model reference bound to a specific scope round.
+func (c *GatewayContract) ReadModelByScopeRound(ctx contractapi.TransactionContextInterface, layer, scopeID, round string) (*ModelRecord, error) {
+	if _, err := c.requireAuthorizedTrainer(ctx); err != nil {
+		return nil, err
+	}
+	normalizedLayer, err := normalizeIdentifier(layer, "layer")
+	if err != nil {
+		return nil, err
+	}
+	scope, err := normalizeIdentifier(scopeID, "scope identifier")
+	if err != nil {
+		return nil, err
+	}
+	roundNumber, err := parseRound(round, true)
+	if err != nil {
+		return nil, err
+	}
+	indexKey := modelScopeRoundKey(normalizedLayer, scope, roundNumber)
+	dataIDBytes, err := ctx.GetStub().GetState(indexKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read scope round index: %w", err)
+	}
+	if len(dataIDBytes) == 0 {
+		return nil, fmt.Errorf("model not found for %s %s round %d", normalizedLayer, scope, roundNumber)
+	}
+	return c.loadModel(ctx, string(dataIDBytes))
+}
+
+func (c *GatewayContract) loadModel(ctx contractapi.TransactionContextInterface, dataID string) (*ModelRecord, error) {
 	if strings.TrimSpace(dataID) == "" {
 		return nil, errors.New("data identifier is required")
 	}
@@ -776,6 +830,10 @@ func modelKey(id string) string {
 	return modelPrefix + id
 }
 
+func modelScopeRoundKey(layer, scope string, round int) string {
+	return fmt.Sprintf("%s%s:%s:%d", modelScopeRoundPrefix, layer, scope, round)
+}
+
 func whitelistKey(jwtSub string) string {
 	return whitelistPrefix + strings.ToLower(strings.TrimSpace(jwtSub))
 }
@@ -802,6 +860,24 @@ func normalizeIdentifier(value, field string) (string, error) {
 		return "", fmt.Errorf("%s is required", field)
 	}
 	return v, nil
+}
+
+func parseRound(raw string, required bool) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		if required {
+			return 0, errors.New("round is required")
+		}
+		return 0, nil
+	}
+	value, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("round must be an integer: %w", err)
+	}
+	if value < 1 {
+		return 0, errors.New("round must be >= 1")
+	}
+	return value, nil
 }
 
 func parseStateConvergenceKey(key string) (stateID, kind, clusterID string) {

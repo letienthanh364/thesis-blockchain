@@ -74,11 +74,14 @@ function readNodes(nodesDir) {
     });
 }
 
-function deriveTrainerId(nodeId, index) {
-    const name = String(nodeId || '');
+function deriveTrainerId(node) {
+    if (node.trainer_id) {
+        return String(node.trainer_id).trim();
+    }
+    const name = String(node.node_id || node.nodeId || '');
     const match = name.match(/(\d+)(?!.*\d)/);
     if (match) {
-        const seq = parseInt(match[1], 10) + 1;
+        const seq = parseInt(match[1], 10);
         return `trainer-node-${String(seq).padStart(3, '0')}`;
     }
     const fallback = name || `node-${index + 1}`;
@@ -115,7 +118,7 @@ function main() {
         nodes.forEach(({ data, index }) => {
             const nodeIdRaw =
                 data.node_id || data.nodeId || `node_${index + 1}`;
-            const trainerId = deriveTrainerId(nodeIdRaw, index);
+            const trainerId = deriveTrainerId(data);
             const match = trainerId.match(/(\d+)(?!.*\d)/);
             const seq = match ? match[1] : String(index + 1).padStart(3, '0');
             const ctx = {
@@ -143,6 +146,17 @@ function main() {
                 vc: vcPayload,
                 jwt_sub: jwtSub,
             };
+            const state =
+                data.state_id ||
+                data.stateId ||
+                data.state ||
+                vcPayload.metadata?.state;
+            if (!state) {
+                throw new Error(
+                    `Node ${nodeIdRaw} (trainer ${trainerId}) is missing state metadata`
+                );
+            }
+            entry.state = state;
             payload.push(entry);
         });
         const output = JSON.stringify(payload, null, 2);

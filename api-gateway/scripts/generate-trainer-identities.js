@@ -149,11 +149,15 @@ function sanitize(str) {
     .replace(/^-+|-+$/g, '');
 }
 
-function deriveTrainerId(nodeId, index) {
+function deriveTrainerId(node, index) {
+  if (node.trainer_id) {
+    return String(node.trainer_id).trim();
+  }
+  const nodeId = node.node_id || node.nodeId || '';
   const asString = String(nodeId);
   const match = asString.match(/(\d+)(?!.*\d)/);
   if (match) {
-    const seq = parseInt(match[1], 10) + 1;
+    const seq = parseInt(match[1], 10);
     return `trainer-node-${String(seq).padStart(3, '0')}`;
   }
   const fallback = sanitize(`trainer-${asString || index}`);
@@ -266,9 +270,9 @@ function main() {
   const summary = [];
 
   nodes.forEach(({ data }, index) => {
-    const nodeId = data.node_id || `node_${index + 1}`;
-    const trainerId = deriveTrainerId(nodeId, index);
-    const subject = deriveSubject(nodeId, trainerId, options);
+    const trainerId = deriveTrainerId(data, index);
+    const nodeLabel = data.node_id || data.nodeId || `node_${index + 1}`;
+    const subject = deriveSubject(nodeLabel, trainerId, options);
     const jobId = deriveJobId(data, trainerId, options);
 
     const keyInfo = writeKeyMaterial(trainerId, options);

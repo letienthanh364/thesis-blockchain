@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ func (s *Service) Layers() []*Layer {
 }
 
 // Commit registers a model reference scoped to the provided layer.
-func (s *Service) Commit(ctx context.Context, authCtx *common.AuthContext, layerSlug, scopeID string, payload json.RawMessage) (*CommitResult, error) {
+func (s *Service) Commit(ctx context.Context, authCtx *common.AuthContext, layerSlug, scopeID string, round int, payload json.RawMessage) (*CommitResult, error) {
 	if authCtx == nil {
 		return nil, common.NewStatusError(http.StatusUnauthorized, "authentication context missing")
 	}
@@ -82,7 +83,11 @@ func (s *Service) Commit(ctx context.Context, authCtx *common.AuthContext, layer
 		return nil, common.NewStatusError(http.StatusForbidden, "trainer not registered")
 	}
 	dataID := common.GeneratePrefixedID("model")
-	args := []string{"CommitModel", dataID, layer.Slug, scope, string(payload)}
+	roundArg := ""
+	if round > 0 {
+		roundArg = strconv.Itoa(round)
+	}
+	args := []string{"CommitModelWithRound", dataID, layer.Slug, scope, roundArg, string(payload)}
 	peerName := s.fabric.SelectPeer()
 	if peerName == "" {
 		return nil, common.NewStatusError(http.StatusInternalServerError, "no fabric peers configured")
@@ -120,6 +125,45 @@ func (s *Service) Retrieve(ctx context.Context, authCtx *common.AuthContext, dat
 	}
 	raw, err := s.fabric.QueryChaincode(peerName, enrolment.FabricClientID, args)
 	if err != nil {
+		return nil, err
+	}
+	var ledger ledgerModelRecord
+	if err := json.Unmarshal(raw, &ledger); err != nil {
+		return nil, err
+	}
+	return ledger.toModelRecord(), nil
+}
+
+// LookupByScopeRound fetches a model reference by scope identifier and round.
+func (s *Service) LookupByScopeRound(ctx context.Context, authCtx *common.AuthContext, layerSlug, scopeID string, round int) (*ModelRecord, error) {
+	if authCtx == nil {
+		return nil, common.NewStatusError(http.StatusUnauthorized, "authentication context missing")
+	}
+	if round < 1 {
+		return nil, common.NewStatusError(http.StatusBadRequest, "round must be >= 1")
+	}
+	layer, err := s.layerBySlug(layerSlug)
+	if err != nil {
+		return nil, err
+	}
+	scope := strings.TrimSpace(scopeID)
+	if scope == "" {
+		return nil, common.NewStatusError(http.StatusBadRequest, layer.ScopeLabel+" identifier is required")
+	}
+	enrolment, ok := s.store.FindByJWTSub(authCtx.Subject)
+	if !ok {
+		return nil, common.NewStatusError(http.StatusForbidden, "trainer not registered")
+	}
+	peerName := s.fabric.SelectPeer()
+	if peerName == "" {
+		return nil, common.NewStatusError(http.StatusInternalServerError, "no fabric peers configured")
+	}
+	args := []string{"ReadModelByScopeRound", layer.Slug, scope, strconv.Itoa(round)}
+	raw, err := s.fabric.QueryChaincode(peerName, enrolment.FabricClientID, args)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "model not found") {
+			return nil, common.NewStatusError(http.StatusNotFound, fmt.Sprintf("no model provided for %s %s round %d", layer.ScopeLabel, scope, round))
+		}
 		return nil, err
 	}
 	var ledger ledgerModelRecord
@@ -195,6 +239,7 @@ type ModelRecord struct {
 	DataID      string          `json:"data_id"`
 	Layer       string          `json:"layer"`
 	ScopeID     string          `json:"scope_id"`
+	Round       int             `json:"round,omitempty"`
 	Owner       string          `json:"owner"`
 	Payload     json.RawMessage `json:"payload"`
 	SubmittedAt string          `json:"submitted_at"`
@@ -213,6 +258,7 @@ type ledgerModelRecord struct {
 	ID          string          `json:"id"`
 	Layer       string          `json:"layer"`
 	ScopeID     string          `json:"scope_id"`
+	Round       int             `json:"round,omitempty"`
 	Owner       string          `json:"owner"`
 	Payload     json.RawMessage `json:"payload"`
 	SubmittedAt string          `json:"submitted_at"`
@@ -226,6 +272,7 @@ func (l *ledgerModelRecord) toModelRecord() *ModelRecord {
 		DataID:      l.ID,
 		Layer:       l.Layer,
 		ScopeID:     l.ScopeID,
+		Round:       l.Round,
 		Owner:       l.Owner,
 		Payload:     l.Payload,
 		SubmittedAt: l.SubmittedAt,

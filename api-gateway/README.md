@@ -329,7 +329,7 @@ Everything still runs behind the single compose file, so the workflow stays the 
 > **Note:** The Fabric containers mount `./organizations/**` from your host. If you cloned a trimmed repo or wiped that directory, regenerate MSP material (via `cryptogen` or the CA flow above) *before* running `docker compose up`; otherwise the peers/orderer will crash with “could not load a valid signer certificate.”
 ### Commit model reference
 
-Each layer gets its own endpoint: `/cluster/models`, `/state/models`, `/nation/models`. The body must include the payload plus the scope identifier expected by the layer:
+Each layer gets its own endpoint: `/cluster/models`, `/state/models`, `/nation/models`. The body must include the payload plus the scope identifier expected by the layer, and (optionally) the training round you are committing for:
 
 ```
 POST /state/models
@@ -338,6 +338,7 @@ Content-Type: application/json
 
 {
   "state_id": "state-41",
+  "state_round": 1,
   "payload": {
     "artifact_hash": "sha256:9f57...",
     "dataset": "mnist-v1",
@@ -346,16 +347,37 @@ Content-Type: application/json
 }
 ```
 
-You can also provide a generic `scope_id`/`scopeId` field instead of the layer-specific key. The response mirrors `POST /data/commit` but includes layer/scope metadata:
+You can also provide a generic `scope_id`/`scopeId` field instead of the layer-specific key. Round numbers are accepted via `round`, `<scope>_round`, or `<scope>-round` (e.g., `cluster_round`, `state-round`, `round`). The response mirrors `POST /data/commit` but includes layer/scope metadata:
 
 ```json
 {
   "data_id": "model-1a2b3c...",
   "layer": "state",
   "scope_id": "state-41",
+  "round": 1,
   "node_id": "trainer-node-001",
   "vc_hash": "1bc9...",
   "submitted_at": "2025-01-02T03:04:05Z"
+}
+```
+
+For nation-wide commits, the same structure applies—just swap in the nation identifier and round keys:
+
+```
+POST /nation/models
+Authorization: Bearer <runtime EdDSA JWT>
+Content-Type: application/json
+
+{
+  "nation_id": "federal-1",
+  "nation_round": 3,
+  "payload": {
+    "model_hash": "sha256:...v0.2",
+    "cid": "cid-of-model-ver0.2",
+    "dataset": "global-mnist-v2",
+    "train_accuracy": 0.941,
+    "notes": "post-state aggregation run"
+  }
 }
 ```
 
@@ -373,21 +395,31 @@ Response:
   "data_id": "model-1a2b3c...",
   "layer": "state",
   "scope_id": "state-41",
+  "round": 1,
   "owner": "trainer-node-001",
   "payload": { ... },
   "submitted_at": "2025-01-02T03:04:05Z"
 }
 ```
 
+### Lookup model reference by scope & round
+
+```
+GET /state/models?state=state-41&round=1
+Authorization: Bearer <runtime EdDSA JWT>
+```
+
+Provide the scope identifier using either `scopeId`, the layer-specific key (e.g., `state_id`), or a shorthand such as `state`. Pair it with `round`, `<scope>_round`, or `<scope>-round` to retrieve the model committed for that exact round. When no record matches, the API responds with `404 {"error":"no model provided for state state-41 round 1"}` so callers can detect missing submissions.
+
 ### List model references
 
 ```
-GET /state/models?scopeId=state-41&page=2
+GET /state/models?state=state-41&page=2
 Authorization: Bearer <runtime EdDSA JWT>
 ```
 
 Parameters:
-- `scopeId` (optional) filters to a specific cluster/state/nation ID. When omitted you receive every record for that layer.
+- `scopeId` / layer-specific aliases such as `state`, `state_id`, `cluster`, etc. (optional) filter to a specific cluster/state/nation ID. When omitted you receive every record for that layer.
 - `page` (optional) defaults to `1`. Page size is fixed at 10 items.
 
 Response:
@@ -399,6 +431,7 @@ Response:
       "data_id": "model-...",
       "layer": "state",
       "scope_id": "state-41",
+      "round": 1,
       "owner": "trainer-node-001",
       "payload": {...},
       "submitted_at": "..."

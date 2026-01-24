@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -110,12 +111,17 @@ func (h *HTTPHandler) handleCommit(w http.ResponseWriter, r *http.Request, layer
 		common.WriteErrorWithCode(w, http.StatusBadRequest, err)
 		return
 	}
+	round, err := extractRound(body, layer)
+	if err != nil {
+		common.WriteErrorWithCode(w, http.StatusBadRequest, err)
+		return
+	}
 	authCtx, ok := common.AuthContextFrom(r.Context())
 	if !ok {
 		common.WriteErrorWithCode(w, http.StatusUnauthorized, common.ErrMissingAuthContext)
 		return
 	}
-	result, err := h.svc.Commit(r.Context(), authCtx, layer.Slug, scopeID, payload)
+	result, err := h.svc.Commit(r.Context(), authCtx, layer.Slug, scopeID, round, payload)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if se, ok := common.AsStatusError(err); ok {
@@ -129,9 +135,11 @@ func (h *HTTPHandler) handleCommit(w http.ResponseWriter, r *http.Request, layer
 
 func (h *HTTPHandler) handleList(w http.ResponseWriter, r *http.Request, layer *Layer) {
 	query := r.URL.Query()
-	scopeID := strings.TrimSpace(query.Get("scopeId"))
-	if scopeID == "" {
-		scopeID = strings.TrimSpace(query.Get("scope_id"))
+	scopeID := extractScopeParam(query, layer)
+	round, err := extractRoundQuery(query, layer)
+	if err != nil {
+		common.WriteErrorWithCode(w, http.StatusBadRequest, common.NewStatusError(http.StatusBadRequest, err.Error()))
+		return
 	}
 	page := 1
 	if raw := strings.TrimSpace(query.Get("page")); raw != "" {
@@ -145,6 +153,23 @@ func (h *HTTPHandler) handleList(w http.ResponseWriter, r *http.Request, layer *
 	authCtx, ok := common.AuthContextFrom(r.Context())
 	if !ok {
 		common.WriteErrorWithCode(w, http.StatusUnauthorized, common.ErrMissingAuthContext)
+		return
+	}
+	if round > 0 {
+		if scopeID == "" {
+			common.WriteErrorWithCode(w, http.StatusBadRequest, common.NewStatusError(http.StatusBadRequest, layer.ScopeLabel+" identifier is required when filtering by round"))
+			return
+		}
+		record, err := h.svc.LookupByScopeRound(r.Context(), authCtx, layer.Slug, scopeID, round)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if se, ok := common.AsStatusError(err); ok {
+				status = se.Code
+			}
+			common.WriteErrorWithCode(w, status, err)
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, record)
 		return
 	}
 	result, err := h.svc.List(r.Context(), authCtx, layer.Slug, scopeID, page)
@@ -179,4 +204,113 @@ func extractScopeID(body map[string]json.RawMessage, layer *Layer) (string, erro
 		}
 	}
 	return "", nil
+}
+
+func extractScopeParam(values url.Values, layer *Layer) string {
+	candidates := []string{"scopeId", "scope_id"}
+	if layer != nil {
+		if field := strings.TrimSpace(layer.ScopeField); field != "" {
+			candidates = append(candidates, field)
+		}
+		if label := strings.TrimSpace(layer.ScopeLabel); label != "" {
+			candidates = append(candidates, label)
+		}
+	}
+	for _, key := range candidates {
+		if key == "" {
+			continue
+		}
+		value := strings.TrimSpace(values.Get(key))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractRound(body map[string]json.RawMessage, layer *Layer) (int, error) {
+	seen := map[string]struct{}{}
+	for _, key := range roundKeyCandidates(layer) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		raw, ok := body[key]
+		if !ok {
+			continue
+		}
+		round, err := parseRoundValue(raw, key)
+		if err != nil {
+			return 0, err
+		}
+		return round, nil
+	}
+	return 0, nil
+}
+
+func extractRoundQuery(values url.Values, layer *Layer) (int, error) {
+	seen := map[string]struct{}{}
+	for _, key := range roundKeyCandidates(layer) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		raw := strings.TrimSpace(values.Get(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 {
+			return 0, fmt.Errorf("%s must be a positive integer", key)
+		}
+		return value, nil
+	}
+	return 0, nil
+}
+
+func roundKeyCandidates(layer *Layer) []string {
+	keys := []string{"round"}
+	add := func(base string) {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			return
+		}
+		keys = append(keys, base+"_round", base+"-round")
+	}
+	if layer != nil {
+		add(layer.ScopeLabel)
+		add(layer.ScopeField)
+	}
+	return keys
+}
+
+func parseRoundValue(raw json.RawMessage, key string) (int, error) {
+	var intVal int
+	if err := json.Unmarshal(raw, &intVal); err == nil {
+		if intVal < 1 {
+			return 0, common.NewStatusError(http.StatusBadRequest, fmt.Sprintf("%s must be >= 1", key))
+		}
+		return intVal, nil
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if str == "" {
+			return 0, common.NewStatusError(http.StatusBadRequest, fmt.Sprintf("%s must be >= 1", key))
+		}
+		value, err := strconv.Atoi(str)
+		if err != nil || value < 1 {
+			return 0, common.NewStatusError(http.StatusBadRequest, fmt.Sprintf("%s must be an integer", key))
+		}
+		return value, nil
+	}
+	return 0, common.NewStatusError(http.StatusBadRequest, fmt.Sprintf("%s must be a positive integer", key))
 }
