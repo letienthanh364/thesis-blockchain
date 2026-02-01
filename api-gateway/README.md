@@ -444,6 +444,32 @@ Response:
 }
 ```
 
+### Latest model reference
+
+```
+GET /state/models/latest?state=state-41
+Authorization: Bearer <runtime EdDSA JWT>
+```
+
+- Accepts the same scope aliases as the other model queries (`scopeId`, `state`, `state_id`, etc.).
+- Returns the most recent submission for the provided scope, or the most recent record in the entire layer when no scope parameter is supplied.
+- The response mirrors `GET /state/models/<data_id>` and also includes the layer-specific identity field (`state_id`, `cluster_id`, `nation_id`) so callers can verify which scope produced the model.
+
+Example response:
+
+```json
+{
+  "data_id": "model-...",
+  "layer": "state",
+  "scope_id": "state-41",
+  "state_id": "state-41",
+  "round": 4,
+  "owner": "trainer-node-009",
+  "payload": {...},
+  "submitted_at": "2025-01-05T12:00:00Z"
+}
+```
+
 Additional layers can be added server-side without changing the HTTP surface—new `/layer/models` routes are registered automatically.
 
 ### Trainer whitelist

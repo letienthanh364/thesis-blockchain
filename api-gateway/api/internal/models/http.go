@@ -50,6 +50,9 @@ func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux, auth *common.Authentica
 		mux.Handle(basePath, auth.RequireAuthWithKeyFunc(keyFunc, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h.handleCollection(w, r, layer)
 		})))
+		mux.Handle(basePath+"/latest", auth.RequireAuthWithKeyFunc(keyFunc, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.handleLatest(w, r, layer)
+		})))
 		mux.Handle(basePath+"/", auth.RequireAuthWithKeyFunc(keyFunc, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h.handleRecord(w, r, layer)
 		})))
@@ -184,6 +187,34 @@ func (h *HTTPHandler) handleList(w http.ResponseWriter, r *http.Request, layer *
 	common.WriteJSON(w, http.StatusOK, result)
 }
 
+func (h *HTTPHandler) handleLatest(w http.ResponseWriter, r *http.Request, layer *Layer) {
+	if r.Method != http.MethodGet {
+		common.WriteErrorWithCode(w, http.StatusMethodNotAllowed, common.ErrMethodNotAllowed)
+		return
+	}
+	scopeID := extractScopeParam(r.URL.Query(), layer)
+	authCtx, ok := common.AuthContextFrom(r.Context())
+	if !ok {
+		common.WriteErrorWithCode(w, http.StatusUnauthorized, common.ErrMissingAuthContext)
+		return
+	}
+	record, err := h.svc.Latest(r.Context(), authCtx, layer.Slug, scopeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if se, ok := common.AsStatusError(err); ok {
+			status = se.Code
+		}
+		common.WriteErrorWithCode(w, status, err)
+		return
+	}
+	response, err := recordWithIdentity(record, layer)
+	if err != nil {
+		common.WriteErrorWithCode(w, http.StatusInternalServerError, err)
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, response)
+}
+
 func extractScopeID(body map[string]json.RawMessage, layer *Layer) (string, error) {
 	candidates := []string{layer.ScopeField, "scope_id", "scopeId"}
 	for _, key := range candidates {
@@ -313,4 +344,28 @@ func parseRoundValue(raw json.RawMessage, key string) (int, error) {
 		return value, nil
 	}
 	return 0, common.NewStatusError(http.StatusBadRequest, fmt.Sprintf("%s must be a positive integer", key))
+}
+
+func recordWithIdentity(record *ModelRecord, layer *Layer) (map[string]interface{}, error) {
+	if record == nil {
+		return nil, errors.New("record is required")
+	}
+	bytes, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]interface{}{}
+	if err := json.Unmarshal(bytes, &payload); err != nil {
+		return nil, err
+	}
+	if layer != nil {
+		key := strings.TrimSpace(layer.ScopeField)
+		if key == "" {
+			key = strings.TrimSpace(layer.ScopeLabel)
+		}
+		if key != "" {
+			payload[key] = record.ScopeID
+		}
+	}
+	return payload, nil
 }

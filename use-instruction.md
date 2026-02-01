@@ -130,6 +130,33 @@ GET /cluster/models?cluster=cluster-7&page=2
 - `page` defaults to `1`; page size is fixed at 10.
 - Response (`200`) includes `items`, `page`, `per_page`, `total`, and `has_more`. Each item mirrors the retrieve payload (with `round` when provided on commit).
 
+## GET `<scope>/models/latest`
+
+Fetch the latest submission for a scope (or for the entire layer when the scope parameter is omitted):
+
+```
+GET /state/models/latest?state=alpha
+```
+
+- Scope aliases match the list above (`scopeId`, `state_id`, `state`, etc.).
+- When the scope parameter is omitted, the gateway returns the most recent model for the entire layer (e.g., the most recent nation submission).
+- The response mirrors `GET /<scope>/models/<data_id>` and also echoes the scope identity using the layer-specific field (`state_id`, `cluster_id`, `nation_id`).
+
+Example response (`200`):
+
+```json
+{
+  "data_id": "model-1a2b3c",
+  "layer": "state",
+  "scope_id": "alpha",
+  "state_id": "alpha",
+  "round": 3,
+  "owner": "trainer-node-007",
+  "payload": { ... },
+  "submitted_at": "2025-01-02T03:04:05Z"
+}
+```
+
 ## Error Handling
 
 - Missing scope or round parameters return `400` responses that cite the required field.

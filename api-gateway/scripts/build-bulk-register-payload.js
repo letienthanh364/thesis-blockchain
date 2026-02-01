@@ -110,6 +110,53 @@ function loadSignedVC(trainerId, signedDir) {
     return JSON.parse(raw);
 }
 
+function extractScopeAssignments(node) {
+    const candidates = [
+        node.scope_assignments,
+        node.scopeAssignments,
+        node.scopes,
+    ];
+    for (const candidate of candidates) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            continue;
+        }
+        const normalized = {};
+        Object.entries(candidate).forEach(([key, value]) => {
+            if (value === null || value === undefined) {
+                return;
+            }
+            const asString = String(value).trim();
+            if (asString) {
+                normalized[key] = asString;
+            }
+        });
+        return normalized;
+    }
+    return {};
+}
+
+function resolveScopeHierarchy(node, scopeAssignments) {
+    const candidates = [
+        node.scope_hierarchy,
+        node.scopeHierarchy,
+    ];
+    for (const candidate of candidates) {
+        if (Array.isArray(candidate) && candidate.length) {
+            const normalized = candidate
+                .map((item) => String(item).trim())
+                .filter((item) => item.length > 0);
+            if (normalized.length) {
+                return normalized;
+            }
+        }
+    }
+    const inferred = Object.keys(scopeAssignments || {});
+    if (inferred.length) {
+        return inferred;
+    }
+    return ['state'];
+}
+
 function main() {
     try {
         const opts = parseArgs(process.argv);
@@ -146,7 +193,7 @@ function main() {
                 vc: vcPayload,
                 jwt_sub: jwtSub,
             };
-            const state =
+            let state =
                 data.state_id ||
                 data.stateId ||
                 data.state ||
@@ -156,7 +203,27 @@ function main() {
                     `Node ${nodeIdRaw} (trainer ${trainerId}) is missing state metadata`
                 );
             }
-            entry.state = state;
+            const scopeAssignments = extractScopeAssignments(data);
+            const scopeHierarchy = resolveScopeHierarchy(data, scopeAssignments);
+            let firstScopeValue = '';
+            scopeHierarchy.forEach((scopeName) => {
+                const scopeValue = scopeAssignments[scopeName];
+                if (!scopeValue) {
+                    return;
+                }
+                entry[scopeName] = scopeValue;
+                if (!firstScopeValue) {
+                    firstScopeValue = scopeValue;
+                }
+            });
+            Object.entries(scopeAssignments).forEach(([scopeName, value]) => {
+                if (entry[scopeName]) {
+                    return;
+                }
+                entry[scopeName] = value;
+            });
+            const stateValue = scopeAssignments.state || firstScopeValue || state;
+            entry.state = stateValue;
             payload.push(entry);
         });
         const output = JSON.stringify(payload, null, 2);

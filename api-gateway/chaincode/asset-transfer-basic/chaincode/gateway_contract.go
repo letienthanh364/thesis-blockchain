@@ -340,9 +340,9 @@ func (c *GatewayContract) ListModels(ctx contractapi.TransactionContextInterface
 	if _, err := c.requireAuthorizedTrainer(ctx); err != nil {
 		return nil, err
 	}
-	layerFilter := strings.ToLower(strings.TrimSpace(layer))
-	if layerFilter == "" {
-		return nil, errors.New("layer is required")
+	layerFilter, err := normalizeIdentifier(layer, "layer")
+	if err != nil {
+		return nil, err
 	}
 	page := 1
 	if strings.TrimSpace(pageArg) != "" {
@@ -414,6 +414,77 @@ func (c *GatewayContract) ListModels(ctx contractapi.TransactionContextInterface
 		Total:   matched,
 		HasMore: hasMore,
 	}, nil
+}
+
+// ReadLatestModel returns the most recent model reference for a layer/scope combination.
+func (c *GatewayContract) ReadLatestModel(ctx contractapi.TransactionContextInterface, layer, scopeID string) (*ModelRecord, error) {
+	if _, err := c.requireAuthorizedTrainer(ctx); err != nil {
+		return nil, err
+	}
+	layerFilter, err := normalizeIdentifier(layer, "layer")
+	if err != nil {
+		return nil, err
+	}
+	scopeFilter := strings.TrimSpace(scopeID)
+	iter, err := ctx.GetStub().GetStateByRange(modelPrefix, modelPrefix+"~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+	defer iter.Close()
+
+	var latest *ModelRecord
+	var latestTime time.Time
+	var latestTimeValid bool
+	for iter.HasNext() {
+		kv, err := iter.Next()
+		if err != nil {
+			return nil, fmt.Errorf("failed to advance iterator: %w", err)
+		}
+		var record ModelRecord
+		if err := json.Unmarshal(kv.Value, &record); err != nil {
+			return nil, err
+		}
+		if record.ID == "" || !strings.EqualFold(record.Layer, layerFilter) {
+			continue
+		}
+		if scopeFilter != "" && !strings.EqualFold(record.ScopeID, scopeFilter) {
+			continue
+		}
+		submittedAt := strings.TrimSpace(record.SubmittedAt)
+		recordTime, parseErr := time.Parse(time.RFC3339, submittedAt)
+		recordTimeValid := parseErr == nil
+		shouldUpdate := false
+		switch {
+		case latest == nil:
+			shouldUpdate = true
+		case recordTimeValid && latestTimeValid:
+			if recordTime.After(latestTime) || (recordTime.Equal(latestTime) && record.ID > latest.ID) {
+				shouldUpdate = true
+			}
+		case recordTimeValid && !latestTimeValid:
+			shouldUpdate = true
+		case !recordTimeValid && !latestTimeValid:
+			currentSubmitted := strings.TrimSpace(latest.SubmittedAt)
+			if submittedAt > currentSubmitted || (submittedAt == currentSubmitted && record.ID > latest.ID) {
+				shouldUpdate = true
+			}
+		}
+		if shouldUpdate {
+			copyRecord := record
+			latest = &copyRecord
+			if recordTimeValid {
+				latestTime = recordTime
+			}
+			latestTimeValid = recordTimeValid
+		}
+	}
+	if latest == nil {
+		if scopeFilter != "" {
+			return nil, fmt.Errorf("no model found for %s %s", layerFilter, scopeFilter)
+		}
+		return nil, fmt.Errorf("no models found for layer %s", layerFilter)
+	}
+	return latest, nil
 }
 
 // RecordWhitelistEntry upserts whitelist metadata keyed by JWT subject.

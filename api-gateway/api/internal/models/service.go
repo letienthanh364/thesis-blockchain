@@ -212,6 +212,47 @@ func (s *Service) List(ctx context.Context, authCtx *common.AuthContext, layerSl
 	return ledgerPage.toListResult(), nil
 }
 
+// Latest returns the most recent model reference for the given layer/scope filter.
+func (s *Service) Latest(ctx context.Context, authCtx *common.AuthContext, layerSlug, scopeID string) (*ModelRecord, error) {
+	if authCtx == nil {
+		return nil, common.NewStatusError(http.StatusUnauthorized, "authentication context missing")
+	}
+	layer, err := s.layerBySlug(layerSlug)
+	if err != nil {
+		return nil, err
+	}
+	enrolment, ok := s.store.FindByJWTSub(authCtx.Subject)
+	if !ok {
+		return nil, common.NewStatusError(http.StatusForbidden, "trainer not registered")
+	}
+	peerName := s.fabric.SelectPeer()
+	if peerName == "" {
+		return nil, common.NewStatusError(http.StatusInternalServerError, "no fabric peers configured")
+	}
+	scope := strings.TrimSpace(scopeID)
+	args := []string{
+		"ReadLatestModel",
+		layer.Slug,
+		scope,
+	}
+	raw, err := s.fabric.QueryChaincode(peerName, enrolment.FabricClientID, args)
+	if err != nil {
+		lowerErr := strings.ToLower(err.Error())
+		if strings.Contains(lowerErr, "no model found") || strings.Contains(lowerErr, "no models found") {
+			if scope != "" {
+				return nil, common.NewStatusError(http.StatusNotFound, fmt.Sprintf("no model found for %s %s", layer.ScopeLabel, scope))
+			}
+			return nil, common.NewStatusError(http.StatusNotFound, fmt.Sprintf("no models found for %s layer", layer.ScopeLabel))
+		}
+		return nil, err
+	}
+	var ledgerRecord ledgerModelRecord
+	if err := json.Unmarshal(raw, &ledgerRecord); err != nil {
+		return nil, err
+	}
+	return ledgerRecord.toModelRecord(), nil
+}
+
 func (s *Service) layerBySlug(slug string) (*Layer, error) {
 	key := strings.ToLower(strings.TrimSpace(slug))
 	if key == "" {
