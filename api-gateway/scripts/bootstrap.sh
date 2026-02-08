@@ -1,19 +1,58 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+TAR_BIN=${TAR_BIN:-$(command -v gtar || command -v tar || true)}
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_CMD=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  SHA_CMD=(shasum -a 256)
+else
+  echo "sha256sum or shasum must be installed" >&2
+  exit 1
+fi
+
+resolve_path() {
+  for candidate in "$@"; do
+    if [ -n "${candidate}" ] && [ -e "${candidate}" ]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ORGS_DIR=$(resolve_path "${FABRIC_ORGS_PATH:-}" "/organizations" "${REPO_DIR}/organizations") || {
+  echo "unable to locate Fabric organizations (set FABRIC_ORGS_PATH)" >&2
+  exit 1
+}
+CHANNEL_ARTIFACTS_DIR=$(resolve_path "${FABRIC_CHANNEL_ARTIFACTS_PATH:-}" "/channel-artifacts" "${REPO_DIR}/channel-artifacts") || {
+  echo "unable to locate channel artifacts (set FABRIC_CHANNEL_ARTIFACTS_PATH)" >&2
+  exit 1
+}
+CHAINCODE_DIR=$(resolve_path "${FABRIC_CHAINCODE_PATH:-}" "/chaincode" "${REPO_DIR}/chaincode") || {
+  echo "unable to locate chaincode directory (set FABRIC_CHAINCODE_PATH)" >&2
+  exit 1
+}
+
+ORDERER_ROOT=${ORDERER_ROOT:-${ORGS_DIR}/ordererOrganizations/nebula.com}
+PEER_ROOT=${PEER_ROOT:-${ORGS_DIR}/peerOrganizations/org1.nebula.com}
+
 CHANNEL_NAME=${CHANNEL_NAME:-nebulachannel}
 CC_NAME=${CHAINCODE_NAME:-gateway}
 CC_VERSION=${CHAINCODE_VERSION:-1.0}
 CC_SEQUENCE=${CHAINCODE_SEQUENCE:-1}
-CC_SRC_PATH=${CHAINCODE_SRC_PATH:-/chaincode/asset-transfer-basic}
+CC_SRC_PATH=${CHAINCODE_SRC_PATH:-${CHAINCODE_DIR}/asset-transfer-basic}
 CC_RUNTIME_LANGUAGE=${CHAINCODE_RUNTIME_LANGUAGE:-golang}
 CC_LABEL="${CC_NAME}_${CC_VERSION}"
-CC_PACKAGE_PATH=/chaincode/${CC_LABEL}.tar.gz
-ORDERER_CA=/organizations/ordererOrganizations/nebula.com/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem
-GENESIS_CHANNEL_TX=/channel-artifacts/nebula-channel.tx
-CHANNEL_BLOCK=/channel-artifacts/${CHANNEL_NAME}.block
-READY_MARKER=${READY_MARKER:-/scripts/.bootstrap-ready}
-CC_HASH_FILE=${CHAINCODE_HASH_FILE:-/chaincode/.${CC_NAME}_hash}
+CC_PACKAGE_PATH=${CC_PACKAGE_PATH:-${CHAINCODE_DIR}/${CC_LABEL}.tar.gz}
+ORDERER_CA=${ORDERER_CA:-${ORDERER_ROOT}/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem}
+GENESIS_CHANNEL_TX=${GENESIS_CHANNEL_TX:-${CHANNEL_ARTIFACTS_DIR}/nebula-channel.tx}
+CHANNEL_BLOCK=${CHANNEL_BLOCK:-${CHANNEL_ARTIFACTS_DIR}/${CHANNEL_NAME}.block}
+READY_MARKER=${READY_MARKER:-${SCRIPT_DIR}/.bootstrap-ready}
+CC_HASH_FILE=${CHAINCODE_HASH_FILE:-${CHAINCODE_DIR}/.${CC_NAME}_hash}
 FORCE_CHAINCODE_REDEPLOY=${CHAINCODE_FORCE_REDEPLOY:-0}
 CHAINCODE_HASH=""
 COMMITTED_SEQUENCE=0
@@ -30,8 +69,11 @@ calculateChaincodeHash() {
     echo ""
     return
   fi
-  tar --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --sort=name \
-    -cf - -C "${CC_SRC_PATH}" . | sha256sum | awk '{print $1}'
+  if [ -n "${TAR_BIN}" ]; then
+    "${TAR_BIN}" -cf - -C "${CC_SRC_PATH}" . | "${SHA_CMD[@]}" | awk '{print $1}'
+  else
+    tar -cf - -C "${CC_SRC_PATH}" . | "${SHA_CMD[@]}" | awk '{print $1}'
+  fi
 }
 
 recordChaincodeHash() {
@@ -45,7 +87,17 @@ detectCommittedSequence() {
   setGlobals 0
   if peer lifecycle chaincode querycommitted --channelID ${CHANNEL_NAME} --name ${CC_NAME} > /tmp/committed_${CC_NAME}.txt 2>/tmp/committed_${CC_NAME}.err; then
     local seq
-    seq=$(awk '/Sequence:/ {gsub(",", "", $2); print $2; exit}' /tmp/committed_${CC_NAME}.txt)
+    seq=$(awk '
+      /Sequence:/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "Sequence:") {
+            next_field = $(i+1)
+            gsub(",", "", next_field)
+            print next_field
+            exit
+          }
+        }
+      }' /tmp/committed_${CC_NAME}.txt)
     if [ -n "${seq}" ]; then
       COMMITTED_SEQUENCE=${seq}
     else
@@ -90,8 +142,8 @@ setGlobals() {
   local PEER_ADDRESS="peer${PEER_INDEX}.org1.nebula.com:$((7051 + PEER_INDEX*1000))"
   export CORE_PEER_LOCALMSPID=Org1MSP
   export CORE_PEER_TLS_ENABLED=true
-  export CORE_PEER_MSPCONFIGPATH=/organizations/peerOrganizations/org1.nebula.com/users/Admin@org1.nebula.com/msp
-  export CORE_PEER_TLS_ROOTCERT_FILE=/organizations/peerOrganizations/org1.nebula.com/peers/peer${PEER_INDEX}.org1.nebula.com/tls/ca.crt
+  export CORE_PEER_MSPCONFIGPATH=${PEER_ROOT}/users/Admin@org1.nebula.com/msp
+  export CORE_PEER_TLS_ROOTCERT_FILE=${PEER_ROOT}/peers/peer${PEER_INDEX}.org1.nebula.com/tls/ca.crt
   export CORE_PEER_ADDRESS=${PEER_ADDRESS}
 }
 
@@ -99,12 +151,12 @@ buildPeerConnectionParameters() {
   PEER_CONN_PARMS=()
   for idx in ${COMMIT_PEER_INDICES}; do
     local address="peer${idx}.org1.nebula.com:$((7051 + idx*1000))"
-    local tls_root="/organizations/peerOrganizations/org1.nebula.com/peers/peer${idx}.org1.nebula.com/tls/ca.crt"
+    local tls_root="${PEER_ROOT}/peers/peer${idx}.org1.nebula.com/tls/ca.crt"
     PEER_CONN_PARMS+=("--peerAddresses" "${address}" "--tlsRootCertFiles" "${tls_root}")
   done
   if [ "${#PEER_CONN_PARMS[@]}" -eq 0 ]; then
     # Default to peer0 when no valid indices are provided.
-    PEER_CONN_PARMS=(--peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles /organizations/peerOrganizations/org1.nebula.com/peers/peer0.org1.nebula.com/tls/ca.crt)
+    PEER_CONN_PARMS=(--peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt)
   fi
 }
 
@@ -182,7 +234,14 @@ installChaincode() {
     else
       log "installing chaincode on peer${idx}"
     fi
-    peer lifecycle chaincode install ${CC_PACKAGE_PATH}
+    if ! output=$(peer lifecycle chaincode install ${CC_PACKAGE_PATH} 2>&1); then
+      if echo "${output}" | grep -qi "already successfully installed"; then
+        log "chaincode already installed on peer${idx} (detected during install)"
+        continue
+      fi
+      echo "${output}" >&2
+      exit 1
+    fi
   done
 }
 
@@ -195,6 +254,11 @@ getPackageID() {
 
 approveChaincode() {
   setGlobals 0
+  if [ "${FORCE_CHAINCODE_REDEPLOY}" != "1" ] && [ "${COMMITTED_SEQUENCE}" -ge "${CC_SEQUENCE}" ]; then
+    log "chaincode already approved"
+    return
+  fi
+
   if [ "${FORCE_CHAINCODE_REDEPLOY}" != "1" ] && peer lifecycle chaincode checkcommitreadiness --channelID ${CHANNEL_NAME} --name ${CC_NAME} --version ${CC_VERSION} --sequence ${CC_SEQUENCE} --output json | grep -q '"Org1MSP": true'; then
     log "chaincode already approved"
     return
@@ -240,7 +304,7 @@ initializeLedger() {
     -C ${CHANNEL_NAME} \
     -n ${CC_NAME} \
     --tls --cafile ${ORDERER_CA} \
-    --peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles /organizations/peerOrganizations/org1.nebula.com/peers/peer0.org1.nebula.com/tls/ca.crt \
+    --peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt \
     -c '{"function":"InitLedger","Args":[]}' || true
 }
 
@@ -260,7 +324,9 @@ main() {
   initializeLedger
   log "network bootstrap completed"
   touch ${READY_MARKER}
-  tail -f /dev/null
+  if [ "${BOOTSTRAP_KEEPALIVE:-1}" = "1" ]; then
+    tail -f /dev/null
+  fi
 }
 
 main

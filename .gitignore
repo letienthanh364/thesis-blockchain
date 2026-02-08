@@ -70,3 +70,5 @@ api-gateway/data/trainers.json
 
 api-gateway/nodes-setup/nodes/
 report-contents/
+api-gateway/process-runner/runtime/
+api-gateway/process-runner/bin/

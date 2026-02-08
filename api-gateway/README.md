@@ -142,6 +142,38 @@ Follow these steps the first time you spin up the stack:
 
 Stop with `docker compose down -v`. If you do not want to export variables manually, drop the environment variables into `.env`.
 
+## Docker-free process runner
+
+If you prefer to run the Fabric orderer, peers, bootstrap CLI, and API gateway directly on your host without Docker, use the process runner that lives under `api-gateway/process-runner/`. The runner hides the boilerplate of starting five different binaries while keeping the Docker workflow intact for users who still rely on it.
+
+### Prerequisites
+
+- Install the Fabric binaries (`orderer`, `peer`, `cryptogen`, etc.) under `./bin/` by running `./install-fabric.sh binary samples` from the repo root.
+- Go 1.20+ must be available on your PATH to build the API server binary.
+- The MSP material and channel artifacts inside `api-gateway/organizations`, `system-genesis-block`, and `channel-artifacts` must already exist (generate them via the steps in [Quick start](#quick-start) if needed).
+- Add the cluster hostnames to `/etc/hosts` so TLS validation succeeds while everything runs on `127.0.0.1`:
+  ```
+  127.0.0.1 orderer.nebula.com peer0.org1.nebula.com peer1.org1.nebula.com peer2.org1.nebula.com
+  ```
+
+### Usage
+
+```
+cd api-gateway
+./process-runner/manage.sh start    # launch orderer + peers + bootstrap CLI + API
+./process-runner/manage.sh status   # check whether each process is running
+./process-runner/manage.sh logs peer0   # tail logs for a component (orderer|peer0|peer1|peer2|gateway|bootstrap)
+./process-runner/manage.sh stop     # stop everything
+```
+
+The runner automatically loads `api-gateway/.env`, so populate that file with the same values you would use for Docker (`AUTH_JWT_SECRET`, `ADMIN_PUBLIC_KEY`, etc.).
+
+The runner keeps everything Docker-free: it copies `config/core.yaml` into `process-runner/runtime/config/`, rewrites external builder paths for the local checkout, deploys the chaincode using `scripts/bootstrap.sh`, builds the Go HTTP server from `api/cmd/gateway`, then writes logs to `process-runner/runtime/logs/`. Runtime ledgers live under `process-runner/runtime/data/`.
+
+Use the Docker Compose stack when you want container isolation or clean-room testing, and switch to the process runner when you need a lightweight developer loop or a host where Docker cannot be installed. A more complete walkthrough (including verification steps) lives in [`RUN_ON_PROCESS.md`](RUN_ON_PROCESS.md). The runner automatically kills stale `orderer`/`peer`/`api-gateway` listeners on the standard ports so each start is a clean slate.
+
+The bootstrap phase (channel creation, peer joins, chaincode package/install/commit) can take a minute or two—`./process-runner/manage.sh start` will only launch the API gateway after that step succeeds. You can monitor progress with `./process-runner/manage.sh logs bootstrap`.
+
 ## Environment variables
 
 | Variable | Default | Description |

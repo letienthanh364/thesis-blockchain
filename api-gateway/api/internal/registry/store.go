@@ -56,6 +56,9 @@ func (s *Store) load() error {
 		}
 		return err
 	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
 	var records []*TrainerRecord
 	if err := json.Unmarshal(data, &records); err != nil {
 		return err

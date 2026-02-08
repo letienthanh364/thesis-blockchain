@@ -128,7 +128,7 @@ function deriveTrainerId(nodeId, index) {
   const str = String(nodeId || '');
   const match = str.match(/(\d+)(?!.*\d)/);
   if (match) {
-    const seq = parseInt(match[1], 10) + 1;
+    const seq = parseInt(match[1], 10);
     return `trainer-node-${String(seq).padStart(3, '0')}`;
   }
   const fallback = str || `node-${index + 1}`;
