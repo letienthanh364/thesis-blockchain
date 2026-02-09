@@ -22,6 +22,8 @@ ORG_DIR="${APP_DIR}/organizations"
 ORDERER_DIR="${ORG_DIR}/ordererOrganizations/nebula.com/orderers/orderer.nebula.com"
 PEER_ORG_DIR="${ORG_DIR}/peerOrganizations/org1.nebula.com"
 DATA_FILE="${APP_DIR}/data/trainers.json"
+# Network connections use localhost; FQDNs are kept for identity and cert paths.
+FABRIC_RESOLVE_HOST="${FABRIC_RESOLVE_HOST:-localhost}"
 
 export PATH="${FABRIC_BIN_DIR}:${PATH}"
 
@@ -117,6 +119,9 @@ prepare_runtime() {
     perl -0pi -e "s|path: .*/external_builders/golang|path: ${builder_base}/golang|g" "${CONFIG_DIR}/core.yaml"
     perl -0pi -e "s|path: .*/external_builders/node|path: ${builder_base}/node|g" "${CONFIG_DIR}/core.yaml"
   fi
+
+  local orderer_tls_ca="${ORDERER_DIR}/msp/tlscacerts/tlsca.nebula.com-cert.pem"
+  perl -0pi -e "s|addressOverrides:\\n|addressOverrides:\\n          - from: orderer.nebula.com:7050\\n            to: ${FABRIC_RESOLVE_HOST}:7050\\n            caCertsFile: ${orderer_tls_ca}\\n|g" "${CONFIG_DIR}/core.yaml"
 
   export FABRIC_CFG_PATH="${CONFIG_DIR}"
 }
@@ -220,10 +225,11 @@ gateway_env() {
   echo "MSP_ID=${MSP_ID:-Org1MSP}"
   echo "ORG_CRYPTO_PATH=${org_crypto}"
   echo "ADMIN_IDENTITY=${ADMIN_IDENTITY:-Admin@org1.nebula.com}"
-  echo "ORDERER_ENDPOINT=${ORDERER_ENDPOINT:-orderer.nebula.com:7050}"
+  echo "ORDERER_ENDPOINT=${ORDERER_ENDPOINT:-${FABRIC_RESOLVE_HOST}:7050}"
+  echo "ORDERER_TLS_HOSTNAME_OVERRIDE=${ORDERER_TLS_HOSTNAME_OVERRIDE:-orderer.nebula.com}"
   echo "ORDERER_TLS_CA=${orderer_tls}"
   echo "ORG_DOMAIN=${ORG_DOMAIN:-org1.nebula.com}"
-  echo "PEER_ENDPOINTS=${PEER_ENDPOINTS:-peer0=peer0.org1.nebula.com:7051,peer1=peer1.org1.nebula.com:8051,peer2=peer2.org1.nebula.com:9051}"
+  echo "PEER_ENDPOINTS=${PEER_ENDPOINTS:-peer0=${FABRIC_RESOLVE_HOST}:7051,peer1=${FABRIC_RESOLVE_HOST}:8051,peer2=${FABRIC_RESOLVE_HOST}:9051}"
   echo "DEFAULT_PEER=${DEFAULT_PEER:-peer0}"
   echo "TRAINER_DB_PATH=${DATA_FILE}"
   echo "AUTH_JWT_SECRET=${AUTH_JWT_SECRET}"
@@ -313,8 +319,8 @@ start_peer() {
   chaincode_port=$(peer_chaincode_port "${idx}")
   local gossip_bootstrap
   case "${idx}" in
-    0) gossip_bootstrap="peer1.org1.nebula.com:8051" ;;
-    1|2) gossip_bootstrap="peer0.org1.nebula.com:7051" ;;
+    0) gossip_bootstrap="${FABRIC_RESOLVE_HOST}:8051" ;;
+    1|2) gossip_bootstrap="${FABRIC_RESOLVE_HOST}:7051" ;;
   esac
   start_process "${component}" \
     "FABRIC_CFG_PATH=${FABRIC_CFG_PATH}" \
@@ -325,11 +331,11 @@ start_peer() {
     "CORE_PEER_TLS_KEY_FILE=${tls_dir}/server.key" \
     "CORE_PEER_TLS_ROOTCERT_FILE=${tls_dir}/ca.crt" \
     "CORE_PEER_ID=${host}" \
-    "CORE_PEER_ADDRESS=${host}:${listen_port}" \
+    "CORE_PEER_ADDRESS=${FABRIC_RESOLVE_HOST}:${listen_port}" \
     "CORE_PEER_LISTENADDRESS=0.0.0.0:${listen_port}" \
-    "CORE_PEER_CHAINCODEADDRESS=${host}:${chaincode_port}" \
+    "CORE_PEER_CHAINCODEADDRESS=${FABRIC_RESOLVE_HOST}:${chaincode_port}" \
     "CORE_PEER_CHAINCODELISTENADDRESS=0.0.0.0:${chaincode_port}" \
-    "CORE_PEER_GOSSIP_EXTERNALENDPOINT=${host}:${listen_port}" \
+    "CORE_PEER_GOSSIP_EXTERNALENDPOINT=${FABRIC_RESOLVE_HOST}:${listen_port}" \
     "CORE_PEER_GOSSIP_BOOTSTRAP=${gossip_bootstrap}" \
     "CORE_PEER_FILESYSTEMPATH=${data_dir}" \
     "CORE_LEDGER_SNAPSHOTS_ROOTDIR=${snapshot_dir}" \
@@ -355,6 +361,7 @@ run_bootstrap() {
   FABRIC_CHANNEL_ARTIFACTS_PATH="${CHANNEL_ARTIFACTS_DIR}" \
   CHAINCODE_HASH_FILE="${CHAINCODE_DIR}/.gateway_hash" \
   FABRIC_CFG_PATH="${CONFIG_DIR}" \
+  FABRIC_RESOLVE_HOST="${FABRIC_RESOLVE_HOST}" \
   BOOTSTRAP_KEEPALIVE=0 \
   "${APP_DIR}/scripts/bootstrap.sh" >>"$(log_file_for bootstrap)" 2>&1
   echo "[process-runner] bootstrap completed"

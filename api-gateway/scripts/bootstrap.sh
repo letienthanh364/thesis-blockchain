@@ -48,7 +48,29 @@ CC_SRC_PATH=${CHAINCODE_SRC_PATH:-${CHAINCODE_DIR}/asset-transfer-basic}
 CC_RUNTIME_LANGUAGE=${CHAINCODE_RUNTIME_LANGUAGE:-golang}
 CC_LABEL="${CC_NAME}_${CC_VERSION}"
 CC_PACKAGE_PATH=${CC_PACKAGE_PATH:-${CHAINCODE_DIR}/${CC_LABEL}.tar.gz}
+# When set, network connections use this host instead of FQDNs.
+FABRIC_RESOLVE_HOST="${FABRIC_RESOLVE_HOST:-}"
+
+resolve_peer_addr() {
+  local idx=$1
+  local port=$((7051 + idx * 1000))
+  if [ -n "${FABRIC_RESOLVE_HOST}" ]; then
+    echo "${FABRIC_RESOLVE_HOST}:${port}"
+  else
+    echo "peer${idx}.org1.nebula.com:${port}"
+  fi
+}
+
+resolve_orderer_addr() {
+  if [ -n "${FABRIC_RESOLVE_HOST}" ]; then
+    echo "${FABRIC_RESOLVE_HOST}:7050"
+  else
+    echo "orderer.nebula.com:7050"
+  fi
+}
+
 ORDERER_CA=${ORDERER_CA:-${ORDERER_ROOT}/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem}
+ORDERER_TLS_HOSTNAME_OVERRIDE=${ORDERER_TLS_HOSTNAME_OVERRIDE:-orderer.nebula.com}
 GENESIS_CHANNEL_TX=${GENESIS_CHANNEL_TX:-${CHANNEL_ARTIFACTS_DIR}/nebula-channel.tx}
 CHANNEL_BLOCK=${CHANNEL_BLOCK:-${CHANNEL_ARTIFACTS_DIR}/${CHANNEL_NAME}.block}
 READY_MARKER=${READY_MARKER:-${SCRIPT_DIR}/.bootstrap-ready}
@@ -139,24 +161,29 @@ prepareChaincodeDeployment() {
 
 setGlobals() {
   local PEER_INDEX=$1
-  local PEER_ADDRESS="peer${PEER_INDEX}.org1.nebula.com:$((7051 + PEER_INDEX*1000))"
+  local PEER_ADDRESS
+  PEER_ADDRESS=$(resolve_peer_addr "${PEER_INDEX}")
   export CORE_PEER_LOCALMSPID=Org1MSP
   export CORE_PEER_TLS_ENABLED=true
   export CORE_PEER_MSPCONFIGPATH=${PEER_ROOT}/users/Admin@org1.nebula.com/msp
   export CORE_PEER_TLS_ROOTCERT_FILE=${PEER_ROOT}/peers/peer${PEER_INDEX}.org1.nebula.com/tls/ca.crt
   export CORE_PEER_ADDRESS=${PEER_ADDRESS}
+  # Override TLS hostname so cert validation passes when connecting via localhost.
+  export CORE_PEER_TLS_SERVERHOSTOVERRIDE="peer${PEER_INDEX}.org1.nebula.com"
 }
 
 buildPeerConnectionParameters() {
   PEER_CONN_PARMS=()
   for idx in ${COMMIT_PEER_INDICES}; do
-    local address="peer${idx}.org1.nebula.com:$((7051 + idx*1000))"
+    local address
+    address=$(resolve_peer_addr "${idx}")
     local tls_root="${PEER_ROOT}/peers/peer${idx}.org1.nebula.com/tls/ca.crt"
     PEER_CONN_PARMS+=("--peerAddresses" "${address}" "--tlsRootCertFiles" "${tls_root}")
   done
   if [ "${#PEER_CONN_PARMS[@]}" -eq 0 ]; then
-    # Default to peer0 when no valid indices are provided.
-    PEER_CONN_PARMS=(--peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt)
+    local default_addr
+    default_addr=$(resolve_peer_addr 0)
+    PEER_CONN_PARMS=(--peerAddresses "${default_addr}" --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt)
   fi
 }
 
@@ -182,20 +209,29 @@ createChannel() {
   fi
 
   log "creating channel ${CHANNEL_NAME}"
-  peer channel create \
-    -o orderer.nebula.com:7050 \
-    --ordererTLSHostnameOverride orderer.nebula.com \
-    -c ${CHANNEL_NAME} \
-    -f ${GENESIS_CHANNEL_TX} \
-    --outputBlock ${CHANNEL_BLOCK} \
-    --tls --cafile ${ORDERER_CA}
+  local max_retries=5
+  for attempt in $(seq 1 ${max_retries}); do
+    if peer channel create \
+      -o "$(resolve_orderer_addr)" \
+      --ordererTLSHostnameOverride "${ORDERER_TLS_HOSTNAME_OVERRIDE}" \
+      -c ${CHANNEL_NAME} \
+      -f ${GENESIS_CHANNEL_TX} \
+      --outputBlock ${CHANNEL_BLOCK} \
+      --tls --cafile ${ORDERER_CA} 2>&1; then
+      return
+    fi
+    log "channel create attempt ${attempt}/${max_retries} failed, retrying in 5s..."
+    sleep 5
+  done
+  log "failed to create channel after ${max_retries} attempts"
+  exit 1
 }
 
 joinChannel() {
   if [ ! -f ${CHANNEL_BLOCK} ]; then
     log "fetching channel block"
     setGlobals 0
-    peer channel fetch 0 ${CHANNEL_BLOCK} -o orderer.nebula.com:7050 --ordererTLSHostnameOverride orderer.nebula.com -c ${CHANNEL_NAME} --tls --cafile ${ORDERER_CA}
+    peer channel fetch 0 ${CHANNEL_BLOCK} -o "$(resolve_orderer_addr)" --ordererTLSHostnameOverride "${ORDERER_TLS_HOSTNAME_OVERRIDE}" -c ${CHANNEL_NAME} --tls --cafile ${ORDERER_CA}
   fi
 
   for idx in 0 1 2; do
@@ -266,8 +302,8 @@ approveChaincode() {
 
   log "approving chaincode"
   peer lifecycle chaincode approveformyorg \
-    -o orderer.nebula.com:7050 \
-    --ordererTLSHostnameOverride orderer.nebula.com \
+    -o "$(resolve_orderer_addr)" \
+    --ordererTLSHostnameOverride "${ORDERER_TLS_HOSTNAME_OVERRIDE}" \
     --channelID ${CHANNEL_NAME} \
     --name ${CC_NAME} \
     --version ${CC_VERSION} \
@@ -284,8 +320,8 @@ commitChaincode() {
   log "committing chaincode"
   buildPeerConnectionParameters
   peer lifecycle chaincode commit \
-    -o orderer.nebula.com:7050 \
-    --ordererTLSHostnameOverride orderer.nebula.com \
+    -o "$(resolve_orderer_addr)" \
+    --ordererTLSHostnameOverride "${ORDERER_TLS_HOSTNAME_OVERRIDE}" \
     --channelID ${CHANNEL_NAME} \
     --name ${CC_NAME} \
     --version ${CC_VERSION} \
@@ -299,20 +335,20 @@ initializeLedger() {
   setGlobals 0
   log "invoking InitLedger"
   peer chaincode invoke \
-    -o orderer.nebula.com:7050 \
-    --ordererTLSHostnameOverride orderer.nebula.com \
+    -o "$(resolve_orderer_addr)" \
+    --ordererTLSHostnameOverride "${ORDERER_TLS_HOSTNAME_OVERRIDE}" \
     -C ${CHANNEL_NAME} \
     -n ${CC_NAME} \
     --tls --cafile ${ORDERER_CA} \
-    --peerAddresses peer0.org1.nebula.com:7051 --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt \
+    --peerAddresses "$(resolve_peer_addr 0)" --tlsRootCertFiles ${PEER_ROOT}/peers/peer0.org1.nebula.com/tls/ca.crt \
     -c '{"function":"InitLedger","Args":[]}' || true
 }
 
 main() {
-  waitForPeer "peer0.org1.nebula.com:7051" || true
-  waitForPeer "peer1.org1.nebula.com:8051" || true
-  waitForPeer "peer2.org1.nebula.com:9051" || true
-  waitForPeer "orderer.nebula.com:7050" || true
+  waitForPeer "$(resolve_peer_addr 0)" || true
+  waitForPeer "$(resolve_peer_addr 1)" || true
+  waitForPeer "$(resolve_peer_addr 2)" || true
+  waitForPeer "$(resolve_orderer_addr)" || true
   createChannel
   joinChannel
   prepareChaincodeDeployment
