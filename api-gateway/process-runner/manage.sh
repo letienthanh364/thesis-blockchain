@@ -325,6 +325,8 @@ start_peer() {
   start_process "${component}" \
     "FABRIC_CFG_PATH=${FABRIC_CFG_PATH}" \
     "CORE_PEER_LOCALMSPID=Org1MSP" \
+    "CORE_VM_ENDPOINT=" \
+    "CORE_CHAINCODE_BUILDER=" \
     "CORE_PEER_MSPCONFIGPATH=${peer_dir}/msp" \
     "CORE_PEER_TLS_ENABLED=true" \
     "CORE_PEER_TLS_CERT_FILE=${tls_dir}/server.crt" \
