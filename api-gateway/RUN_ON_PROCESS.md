@@ -25,15 +25,33 @@ From the repo root (`thesis-blockchain/`):
    ```
    This drops `orderer`, `peer`, `cryptogen`, etc. into `./bin/`.
 
-2. Install Go 1.20+ and ensure `go` is on your PATH. The process runner builds
+2. Populate `api-gateway/config/` with the Fabric config templates. These files
+   are derived from the upstream Fabric sample config and remain untracked in
+   git, so a fresh clone will not have them. Because this repo already contains
+   a `test-network/` folder, `./install-fabric.sh` assumes you *are* inside
+   `fabric-samples` and skips cloning the upstream repo. Clone it manually (or
+   run the installer from an empty temp directory) to pull down the templates,
+   then copy the peer, orderer, and configtx configs into place:
+   ```bash
+   git clone --depth 1 https://github.com/hyperledger/fabric-samples.git /tmp/fabric-samples
+   mkdir -p api-gateway/config
+   cp /tmp/fabric-samples/config/{core.yaml,orderer.yaml,configtx.yaml} api-gateway/config/
+   ```
+   (Alternatively, run `./install-fabric.sh binary samples` from a temporary
+   empty directory so it clones `fabric-samples/` there, then copy the config
+   files back into this repo.)
+   Feel free to tweak these files for Nebula-specific needs; the runner simply
+   copies them into `process-runner/runtime/config/` on each start.
+
+3. Install Go 1.20+ and ensure `go` is on your PATH. The process runner builds
    the API gateway binary before launching it.
 
-3. Make sure no Docker stack (or any other Fabric deployment) is listening on
+4. Make sure no Docker stack (or any other Fabric deployment) is listening on
    the standard ports (7050, 7051, 8051, 9051, 9000). Run
    `docker compose down -v` if you previously brought up the Docker stack. The
    process runner now refuses to start when those ports are occupied.
 
-4. Generate or refresh the MSP material and channel artifacts (only needed the
+5. Generate or refresh the MSP material and channel artifacts (only needed the
    first time or whenever you need a clean slate). **Run these commands from the
    `api-gateway/` directory** because the process runner reads artifacts from
    there, not from the repo root:
@@ -57,12 +75,12 @@ From the repo root (`thesis-blockchain/`):
      -outputAnchorPeersUpdate channel-artifacts/Org1MSPanchors.tx
    ```
 
-5. Point the Fabric hostnames at `127.0.0.1` so TLS validation succeeds:
+6. Point the Fabric hostnames at `127.0.0.1` so TLS validation succeeds:
    ```
    127.0.0.1 orderer.nebula.com peer0.org1.nebula.com peer1.org1.nebula.com peer2.org1.nebula.com
    ```
 
-6. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
+7. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
    `ADMIN_PUBLIC_KEY`, and keep the rest aligned with your deployment. The
    process runner automatically loads this file.
 
