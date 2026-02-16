@@ -130,6 +130,9 @@ prepare_runtime() {
     perl -0pi -e "s|(^\\s*externalBuilders:\\n)(\\s*- name:.*?\\n\\s*installTimeout:)|\$1       - name: golang\\n         path: ${builder_base}/golang\\n         propagateEnvironment:\\n           - GOCACHE\\n           - GOENV\\n           - HOME\\n           - GOPROXY\\n       - name: node\\n         path: ${builder_base}/node\\n         propagateEnvironment:\\n           - HOME\\n           - npm_config_cache\\n\\n\\n\$2|ms" "${CONFIG_DIR}/core.yaml"
   fi
   perl -0pi -e "s|^\\s*endpoint:\\s*unix:///var/run/docker\\.sock\\s*$|    endpoint: \"\"|m" "${CONFIG_DIR}/core.yaml"
+  # Some restricted runtimes deny the extra operations listener socket.
+  # Disable it explicitly so orderer can still start its main gRPC endpoint.
+  perl -0pi -e "s|(^Operations:\\n\\s*ListenAddress:)\\s*.*$|\\1 \"\"|m" "${CONFIG_DIR}/orderer.yaml"
 
   local orderer_tls_ca="${ORDERER_DIR}/msp/tlscacerts/tlsca.nebula.com-cert.pem"
   perl -0pi -e "s|addressOverrides:\\n|addressOverrides:\\n          - from: orderer.nebula.com:7050\\n            to: ${FABRIC_RESOLVE_HOST}:7050\\n            caCertsFile: ${orderer_tls_ca}\\n|g" "${CONFIG_DIR}/core.yaml"
@@ -330,8 +333,6 @@ start_orderer() {
     "ORDERER_FILELEDGER_LOCATION=${ledger_dir}" \
     "ORDERER_CONSENSUS_WALDIR=${wal_dir}" \
     "ORDERER_CONSENSUS_SNAPDIR=${snap_dir}" \
-    "ORDERER_OPERATIONS_LISTENADDRESS=127.0.0.1:17050" \
-    "ORDERER_METRICS_PROVIDER=prometheus" \
     -- orderer
   wait_for_port 127.0.0.1 7050 "orderer"
 }
