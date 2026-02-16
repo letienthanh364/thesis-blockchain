@@ -146,10 +146,27 @@ Stop with `docker compose down -v`. If you do not want to export variables manua
 
 If you prefer to run the Fabric orderer, peers, bootstrap CLI, and API gateway directly on your host without Docker, use the process runner that lives under `api-gateway/process-runner/`. The runner hides the boilerplate of starting five different binaries while keeping the Docker workflow intact for users who still rely on it.
 
+### What changed on `fix-process-running`
+
+- `process-runner/manage.sh` now requires `Go 1.23+`, `jq`, and validates
+  prerequisites before launch.
+- Docker-style gateway env values are now normalized for process mode
+  (`orderer.nebula.com` / `peer*.org1.nebula.com` -> `localhost` by default).
+- Container-only TLS CA paths now fall back to local cert paths in process mode.
+- External builder run scripts no longer fail startup on debug env filtering,
+  fixing `builder 'golang' run failed: exit status 1` during invokes.
+- Runtime `core.yaml` is patched to use local external builders and Docker socket
+  access is disabled for Docker-free chaincode execution.
+
 ### Prerequisites
 
+- Install host packages required by process mode. Debian/Ubuntu example:
+  ```bash
+  apt-get update
+  apt-get install -y git curl jq perl openssl nodejs npm build-essential
+  ```
 - Install the Fabric binaries (`orderer`, `peer`, `cryptogen`, etc.) under `./bin/` by running `./install-fabric.sh binary samples` from the repo root.
-- Go 1.20+ must be available on your PATH to build the API server binary.
+- Go 1.23+ must be available on your PATH to build process-mode artifacts.
 - The MSP material and channel artifacts inside `api-gateway/organizations`, `system-genesis-block`, and `channel-artifacts` must already exist (generate them via the steps in [Quick start](#quick-start) if needed).
 - Add the cluster hostnames to `/etc/hosts` so TLS validation succeeds while everything runs on `127.0.0.1`:
   ```
@@ -166,7 +183,15 @@ cd api-gateway
 ./process-runner/manage.sh stop     # stop everything
 ```
 
-The runner automatically loads `api-gateway/.env`, so populate that file with the same values you would use for Docker (`AUTH_JWT_SECRET`, `ADMIN_PUBLIC_KEY`, etc.).
+If your system has multiple Go versions, select Go >=1.23 explicitly before start:
+```bash
+export PATH=/usr/local/go/bin:$PATH
+```
+
+The runner automatically loads `api-gateway/.env`, so populate that file with
+the same values you would use for Docker (`AUTH_JWT_SECRET`, `ADMIN_PUBLIC_KEY`,
+etc.). Docker-style endpoint values are accepted; the runner normalizes them for
+process mode.
 
 The runner keeps everything Docker-free: it copies `config/core.yaml` into `process-runner/runtime/config/`, rewrites external builder paths for the local checkout, deploys the chaincode using `scripts/bootstrap.sh`, builds the Go HTTP server from `api/cmd/gateway`, then writes logs to `process-runner/runtime/logs/`. Runtime ledgers live under `process-runner/runtime/data/`.
 
@@ -183,9 +208,9 @@ The bootstrap phase (channel creation, peer joins, chaincode package/install/com
 | `MSP_ID` | `Org1MSP` | MSP ID for the peer org. |
 | `ORG_CRYPTO_PATH` | `/organizations/peerOrganizations/org1.nebula.com` | Base path that contains `users/<identity>/msp`. The gateway dynamically switches identities per trainer using this root. |
 | `ADMIN_IDENTITY` | `Admin@org1.nebula.com` | Default identity used by the gateway (also doubles as fallback if a trainer-specific identity is missing). |
-| `ORDERER_ENDPOINT` | `orderer.nebula.com:7050` | Orderer gRPC endpoint. |
-| `ORDERER_TLS_CA` | `/organizations/ordererOrganizations/nebula.com/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem` | TLS CA used when invoking the orderer. |
-| `PEER_ENDPOINTS` | `peer0=peer0.org1.nebula.com:7051,peer1=...,peer2=...` | CSV map of peer name → address. The gateway picks `DEFAULT_PEER` for all transactions. |
+| `ORDERER_ENDPOINT` | `orderer.nebula.com:7050` | Orderer gRPC endpoint. In process mode, `orderer.nebula.com` is normalized to `localhost` unless you override `FABRIC_RESOLVE_HOST`. |
+| `ORDERER_TLS_CA` | `/organizations/ordererOrganizations/nebula.com/orderers/orderer.nebula.com/msp/tlscacerts/tlsca.nebula.com-cert.pem` | TLS CA used when invoking the orderer. In process mode, missing container paths fall back to local cert paths under `api-gateway/organizations/...`. |
+| `PEER_ENDPOINTS` | `peer0=peer0.org1.nebula.com:7051,peer1=...,peer2=...` | CSV map of peer name → address. In process mode, `peer*.org1.nebula.com` hosts are normalized to `localhost` by default. |
 | `DEFAULT_PEER` | `peer0` | Peer used for submits/queries. |
 | `AUTH_JWT_SECRET` | _(required)_ | Shared HS256 secret used to protect the `/auth/register-trainer` endpoint. Runtime APIs require per-trainer Ed25519 JWTs. |
 | `ADMIN_PUBLIC_KEY` | _(required)_ | Base64-encoded Ed25519 public key used to verify VC signatures. |

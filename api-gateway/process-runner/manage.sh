@@ -37,11 +37,22 @@ die() {
 }
 
 ensure_prereqs() {
-  for bin in orderer peer go; do
+  for bin in orderer peer go jq; do
     if ! command -v "${bin}" >/dev/null 2>&1; then
-      die "required binary '${bin}' not found in PATH (${PATH}). Run ./install-fabric.sh binary and ensure Go is installed."
+      die "required binary '${bin}' not found in PATH (${PATH}). Run ./install-fabric.sh binary and ensure Go + jq are installed."
     fi
   done
+
+  local goversion
+  goversion=$(go env GOVERSION 2>/dev/null || go version | awk '{print $3}')
+  goversion=${goversion#go}
+  local go_major go_minor
+  IFS='.' read -r go_major go_minor _ <<<"${goversion}"
+  go_major=${go_major:-0}
+  go_minor=${go_minor:-0}
+  if [ "${go_major}" -lt 1 ] || { [ "${go_major}" -eq 1 ] && [ "${go_minor}" -lt 23 ]; }; then
+    die "Go 1.23+ is required for process chaincode builds (found go${goversion}). Upgrade Go, then rerun '$0 start'."
+  fi
 
   for dir in "${ORG_DIR}" "${CHANNEL_ARTIFACTS_DIR}" "${SYSTEM_GENESIS_DIR}"; do
     if [ ! -d "${dir}" ]; then
@@ -116,9 +127,9 @@ prepare_runtime() {
 
   local builder_base="${APP_DIR}/external_builders"
   if [ -d "${builder_base}" ]; then
-    perl -0pi -e "s|path: .*/external_builders/golang|path: ${builder_base}/golang|g" "${CONFIG_DIR}/core.yaml"
-    perl -0pi -e "s|path: .*/external_builders/node|path: ${builder_base}/node|g" "${CONFIG_DIR}/core.yaml"
+    perl -0pi -e "s|(^\\s*externalBuilders:\\n)(\\s*- name:.*?\\n\\s*installTimeout:)|\$1       - name: golang\\n         path: ${builder_base}/golang\\n         propagateEnvironment:\\n           - GOCACHE\\n           - GOENV\\n           - HOME\\n           - GOPROXY\\n       - name: node\\n         path: ${builder_base}/node\\n         propagateEnvironment:\\n           - HOME\\n           - npm_config_cache\\n\\n\\n\$2|ms" "${CONFIG_DIR}/core.yaml"
   fi
+  perl -0pi -e "s|^\\s*endpoint:\\s*unix:///var/run/docker\\.sock\\s*$|    endpoint: \"\"|m" "${CONFIG_DIR}/core.yaml"
 
   local orderer_tls_ca="${ORDERER_DIR}/msp/tlscacerts/tlsca.nebula.com-cert.pem"
   perl -0pi -e "s|addressOverrides:\\n|addressOverrides:\\n          - from: orderer.nebula.com:7050\\n            to: ${FABRIC_RESOLVE_HOST}:7050\\n            caCertsFile: ${orderer_tls_ca}\\n|g" "${CONFIG_DIR}/core.yaml"
@@ -220,16 +231,58 @@ gateway_env() {
   load_env_file
   local org_crypto="${PEER_ORG_DIR}"
   local orderer_tls="${ORDERER_DIR}/msp/tlscacerts/tlsca.nebula.com-cert.pem"
+  local default_orderer_endpoint="${FABRIC_RESOLVE_HOST}:7050"
+  local default_peer_endpoints="peer0=${FABRIC_RESOLVE_HOST}:7051,peer1=${FABRIC_RESOLVE_HOST}:8051,peer2=${FABRIC_RESOLVE_HOST}:9051"
+
+  local resolved_orderer_endpoint="${ORDERER_ENDPOINT:-${default_orderer_endpoint}}"
+  case "${resolved_orderer_endpoint}" in
+    orderer.nebula.com:*)
+      resolved_orderer_endpoint="${FABRIC_RESOLVE_HOST}:${resolved_orderer_endpoint##*:}"
+      ;;
+  esac
+
+  local resolved_orderer_tls_ca="${ORDERER_TLS_CA:-${orderer_tls}}"
+  if [ ! -f "${resolved_orderer_tls_ca}" ]; then
+    resolved_orderer_tls_ca="${orderer_tls}"
+  fi
+
+  local resolved_peer_endpoints="${PEER_ENDPOINTS:-${default_peer_endpoints}}"
+  local normalized_peer_endpoints=""
+  IFS=',' read -r -a _peer_entries <<<"${resolved_peer_endpoints}"
+  for entry in "${_peer_entries[@]}"; do
+    entry="${entry//[[:space:]]/}"
+    [ -z "${entry}" ] && continue
+    local peer_name peer_addr peer_host peer_port
+    peer_name="${entry%%=*}"
+    peer_addr="${entry#*=}"
+    if [[ "${peer_addr}" == *:* ]]; then
+      peer_host="${peer_addr%:*}"
+      peer_port="${peer_addr##*:}"
+      case "${peer_host}" in
+        peer[0-9].org1.nebula.com)
+          peer_addr="${FABRIC_RESOLVE_HOST}:${peer_port}"
+          ;;
+      esac
+    fi
+    if [ -n "${normalized_peer_endpoints}" ]; then
+      normalized_peer_endpoints+=","
+    fi
+    normalized_peer_endpoints+="${peer_name}=${peer_addr}"
+  done
+  if [ -z "${normalized_peer_endpoints}" ]; then
+    normalized_peer_endpoints="${default_peer_endpoints}"
+  fi
+
   echo "FABRIC_CHANNEL=${FABRIC_CHANNEL:-nebulachannel}"
   echo "FABRIC_CHAINCODE=${FABRIC_CHAINCODE:-gateway}"
   echo "MSP_ID=${MSP_ID:-Org1MSP}"
   echo "ORG_CRYPTO_PATH=${org_crypto}"
   echo "ADMIN_IDENTITY=${ADMIN_IDENTITY:-Admin@org1.nebula.com}"
-  echo "ORDERER_ENDPOINT=${ORDERER_ENDPOINT:-${FABRIC_RESOLVE_HOST}:7050}"
+  echo "ORDERER_ENDPOINT=${resolved_orderer_endpoint}"
   echo "ORDERER_TLS_HOSTNAME_OVERRIDE=${ORDERER_TLS_HOSTNAME_OVERRIDE:-orderer.nebula.com}"
-  echo "ORDERER_TLS_CA=${orderer_tls}"
+  echo "ORDERER_TLS_CA=${resolved_orderer_tls_ca}"
   echo "ORG_DOMAIN=${ORG_DOMAIN:-org1.nebula.com}"
-  echo "PEER_ENDPOINTS=${PEER_ENDPOINTS:-peer0=${FABRIC_RESOLVE_HOST}:7051,peer1=${FABRIC_RESOLVE_HOST}:8051,peer2=${FABRIC_RESOLVE_HOST}:9051}"
+  echo "PEER_ENDPOINTS=${normalized_peer_endpoints}"
   echo "DEFAULT_PEER=${DEFAULT_PEER:-peer0}"
   echo "TRAINER_DB_PATH=${DATA_FILE}"
   echo "AUTH_JWT_SECRET=${AUTH_JWT_SECRET}"

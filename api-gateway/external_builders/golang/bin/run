@@ -51,7 +51,7 @@ function process_chaincode_metadata_json {
 # extract the required environment variables
 process_chaincode_metadata_json
 
-# output for debug purposes
-env | grep CORE | sort
+# Output for debug purposes only; do not fail startup if filtering finds nothing.
+env | grep '^CORE' | sort || true
 
 exec "${BUILD_OUTPUT_DIR}/chaincode" -peer.address="${CORE_PEER_ADDRESS}" > "${LOG_DIRECTORY}/${CORE_CHAINCODE_ID_NAME}.log" 2>&1

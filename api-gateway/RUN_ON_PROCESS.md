@@ -15,17 +15,46 @@ The process stack is functionally equivalent to the Docker stack:
   like they do in Docker. Every request you issue in Docker works unmodified in
   process mode.
 
+## What changed on `fix-process-running`
+
+The branch includes process-mode hardening so a fresh machine can boot reliably:
+
+- `process-runner/manage.sh` now validates required tools (`orderer`, `peer`,
+  `go`, `jq`) and enforces `Go 1.23+`.
+- Gateway startup now normalizes Docker-style `.env` values for process mode:
+  `orderer.nebula.com` and `peer*.org1.nebula.com` endpoints are rewritten to
+  `${FABRIC_RESOLVE_HOST}` (default `localhost`), and container CA paths fall
+  back to local filesystem certificates.
+- External builder debug output no longer aborts chaincode startup (`env | grep`
+  is now non-fatal), which fixes `builder 'golang' run failed: exit status 1`
+  during invoke/register calls.
+- Runner bootstrap rewrites runtime `core.yaml` with local external-builder
+  paths and disables Docker socket usage for chaincode launch.
+- Runner startup kills only stale `orderer`/`peer`/`api-gateway` listeners on
+  the managed ports before starting a clean process stack.
+
 ## 1. Prerequisites
 
 From the repo root (`thesis-blockchain/`):
 
-1. Install the Fabric binaries and samples if you have not already:
+1. Install host packages needed by process mode.
+   Debian/Ubuntu example:
+   ```bash
+   apt-get update
+   apt-get install -y git curl jq perl openssl nodejs npm build-essential
+   ```
+   Notes:
+   - `jq` is required by the external builders and bootstrap scripts.
+   - `perl` is used by `process-runner/manage.sh` to patch runtime config.
+   - `node`/`npm` are needed for trainer tooling scripts under `nodes-setup/`.
+
+2. Install the Fabric binaries and samples if you have not already:
    ```bash
    ./install-fabric.sh binary samples
    ```
    This drops `orderer`, `peer`, `cryptogen`, etc. into `./bin/`.
 
-2. Populate `api-gateway/config/` with the Fabric config templates. These files
+3. Populate `api-gateway/config/` with the Fabric config templates. These files
    are derived from the upstream Fabric sample config and remain untracked in
    git, so a fresh clone will not have them. Because this repo already contains
    a `test-network/` folder, `./install-fabric.sh` assumes you *are* inside
@@ -43,15 +72,22 @@ From the repo root (`thesis-blockchain/`):
    Feel free to tweak these files for Nebula-specific needs; the runner simply
    copies them into `process-runner/runtime/config/` on each start.
 
-3. Install Go 1.20+ and ensure `go` is on your PATH. The process runner builds
-   the API gateway binary before launching it.
+4. Install Go `1.23+` and ensure the selected `go` on `PATH` is >= 1.23.
+   The process runner builds both chaincode/runtime artifacts and the API binary.
+   ```bash
+   go version
+   ```
+   If multiple Go versions are installed, prepend the newer one when starting:
+   ```bash
+   export PATH=/usr/local/go/bin:$PATH
+   ```
 
-4. Make sure no Docker stack (or any other Fabric deployment) is listening on
+5. Make sure no Docker stack (or any other Fabric deployment) is listening on
    the standard ports (7050, 7051, 8051, 9051, 9000). Run
    `docker compose down -v` if you previously brought up the Docker stack. The
    process runner now refuses to start when those ports are occupied.
 
-5. Generate or refresh the MSP material and channel artifacts (only needed the
+6. Generate or refresh the MSP material and channel artifacts (only needed the
    first time or whenever you need a clean slate). **Run these commands from the
    `api-gateway/` directory** because the process runner reads artifacts from
    there, not from the repo root:
@@ -75,14 +111,23 @@ From the repo root (`thesis-blockchain/`):
      -outputAnchorPeersUpdate channel-artifacts/Org1MSPanchors.tx
    ```
 
-6. Point the Fabric hostnames at `127.0.0.1` so TLS validation succeeds:
+7. Point the Fabric hostnames at `127.0.0.1` so TLS validation succeeds:
    ```
    127.0.0.1 orderer.nebula.com peer0.org1.nebula.com peer1.org1.nebula.com peer2.org1.nebula.com
    ```
 
-7. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
-   `ADMIN_PUBLIC_KEY`, and keep the rest aligned with your deployment. The
-   process runner automatically loads this file.
+8. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
+   `ADMIN_PUBLIC_KEY`, and keep the rest aligned with your deployment.
+   The process runner automatically loads this file.
+   - You can keep Docker-style `ORDERER_ENDPOINT`, `PEER_ENDPOINTS`, and
+     `ORDERER_TLS_CA` values in `.env`; the runner normalizes them for process mode.
+
+9. Optional preflight check before first start:
+   ```bash
+   command -v orderer peer go jq perl node npm >/dev/null
+   go version
+   ls api-gateway/config/{core.yaml,orderer.yaml,configtx.yaml}
+   ```
 
 ## 2. Prepare trainer identities
 

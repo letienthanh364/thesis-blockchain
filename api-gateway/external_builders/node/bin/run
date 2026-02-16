@@ -52,8 +52,8 @@ else
     ls -lart "$BUILD_OUTPUT_DIR"
 fi
 
-# output for debug purposes
-env | grep CORE | sort
+# Output for debug purposes only; do not fail startup if filtering finds nothing.
+env | grep '^CORE' | sort || true
 
 # run the chaincode
 exec npm start -- --peer.address="${CORE_PEER_ADDRESS}" > "${LOG_DIRECTORY}/${CORE_CHAINCODE_ID_NAME}.log" 2>&1
