@@ -56,21 +56,24 @@ From the repo root (`thesis-blockchain/`):
 
 3. Populate `api-gateway/config/` with the Fabric config templates. These files
    are derived from the upstream Fabric sample config and remain untracked in
-   git, so a fresh clone will not have them. Because this repo already contains
-   a `test-network/` folder, `./install-fabric.sh` assumes you *are* inside
-   `fabric-samples` and skips cloning the upstream repo. Clone it manually (or
-   run the installer from an empty temp directory) to pull down the templates,
-   then copy the peer, orderer, and configtx configs into place:
+   git, so a fresh clone will not have them. After running
+   `./install-fabric.sh binary samples` from the repo root (`thesis-blockchain/`)
+   the installer leaves a populated `config/` directory right beside
+   `api-gateway/`. Staying in the repo root, copy those templates into the API
+   folder:
    ```bash
-   git clone --depth 1 https://github.com/hyperledger/fabric-samples.git /tmp/fabric-samples
-   mkdir -p api-gateway/config
-   cp /tmp/fabric-samples/config/{core.yaml,orderer.yaml,configtx.yaml} api-gateway/config/
+   cp config/ api-gateway/ -r
    ```
-   (Alternatively, run `./install-fabric.sh binary samples` from a temporary
-   empty directory so it clones `fabric-samples/` there, then copy the config
-   files back into this repo.)
-   Feel free to tweak these files for Nebula-specific needs; the runner simply
-   copies them into `process-runner/runtime/config/` on each start.
+   While you are in the root, also create the `data/` folder used by the API
+   runtime and the `nodes-setup/` workspace for trainer artifacts so process
+   mode can place files where it expects them:
+   ```bash
+   mkdir -p api-gateway/{data,nodes-setup}
+   ```
+   If your environment already has `fabric-samples` elsewhere, you can copy the
+   same files from that clone instead. Feel free to tweak these configs for
+   Nebula-specific needs; the runner simply copies them into
+   `process-runner/runtime/config/` on each start.
 
 4. Install Go `1.23+` and ensure the selected `go` on `PATH` is >= 1.23.
    The process runner builds both chaincode/runtime artifacts and the API binary.
@@ -94,6 +97,13 @@ From the repo root (`thesis-blockchain/`):
    ```bash
    cd api-gateway
    rm -rf organizations system-genesis-block channel-artifacts
+
+   # locate the binary and add it to PATH if `cryptogen` is not yet found
+   find / -name cryptogen 2>/dev/null   # expect .../test-network/organizations/cryptogen and .../bin/cryptogen
+   nano ~/.bashrc                      # append: export PATH=$PATH:/root/thesis-blockchain/bin
+   source ~/.bashrc
+   which cryptogen                     # should print /root/thesis-blockchain/bin/cryptogen
+   cryptogen version
 
    cryptogen generate --config=crypto-config.yaml --output=organizations
 
@@ -122,7 +132,18 @@ From the repo root (`thesis-blockchain/`):
    - You can keep Docker-style `ORDERER_ENDPOINT`, `PEER_ENDPOINTS`, and
      `ORDERER_TLS_CA` values in `.env`; the runner normalizes them for process mode.
 
-9. Optional preflight check before first start:
+9. Generate the admin Ed25519 keypair (used to sign VCs and populate
+   `ADMIN_PUBLIC_KEY`):
+   ```bash
+   openssl genpkey -algorithm Ed25519 -out admin_ed25519_sk.pem
+
+   openssl pkey -in admin_ed25519_sk.pem -pubout -outform DER | tail -c 32 | base64 > admin_public_key.b64
+   ```
+   Copy the single line from `admin_public_key.b64` into `.env` as
+   `ADMIN_PUBLIC_KEY=...`. Keep `admin_ed25519_sk.pem` safe—you will need it when
+   signing VCs.
+
+10. Optional preflight check before first start:
    ```bash
    command -v orderer peer go jq perl node npm >/dev/null
    go version

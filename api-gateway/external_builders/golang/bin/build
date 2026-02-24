@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec 1>&2
+
+ARGS=("$@")
+echo "[golang-builder] raw args: ${ARGS[*]}"
+
+BUILD_OUTPUT_DIR=""
+METADATA_DIR=""
+SOURCE_DIR=""
+
+for candidate in "${ARGS[@]}"; do
+  if [ -z "${candidate}" ] || [ ! -d "${candidate}" ]; then
+    continue
+  fi
+  if [ -f "${candidate}/metadata.json" ]; then
+    METADATA_DIR="${candidate}"
+    continue
+  fi
+  if [ -f "${candidate}/go.mod" ]; then
+    SOURCE_DIR="${candidate}"
+    continue
+  fi
+  MODULE_DIR=$(find "${candidate}" -maxdepth 3 -name go.mod -print -quit 2>/dev/null || true)
+  if [ -n "${MODULE_DIR}" ] && [ -z "${SOURCE_DIR}" ]; then
+    SOURCE_DIR="$(dirname "${MODULE_DIR}")"
+    continue
+  fi
+  if [[ "${candidate}" == *"/bld" ]] || [[ "${candidate}" == *"/build" ]] || [ -z "${BUILD_OUTPUT_DIR}" ]; then
+    BUILD_OUTPUT_DIR="${candidate}"
+  fi
+done
+
+if [ -z "${BUILD_OUTPUT_DIR}" ]; then
+  BUILD_OUTPUT_DIR="$1"
+fi
+
+if [ -z "${METADATA_DIR}" ]; then
+    echo "[golang-builder] metadata.json not found in provided arguments" >&2
+    exit 1
+fi
+
+echo "[golang-builder] metadata dir: ${METADATA_DIR}"
+
+if [ -z "${SOURCE_DIR}" ]; then
+  PACKAGE_ROOT=$(cd "${METADATA_DIR}/.." && pwd)
+  ALT_SRC="${PACKAGE_ROOT}/src"
+  if [ -d "${ALT_SRC}" ] && [ -f "${ALT_SRC}/go.mod" ]; then
+    SOURCE_DIR="${ALT_SRC}"
+  fi
+fi
+
+if [ -z "${SOURCE_DIR}" ]; then
+    echo "[golang-builder] go.mod still not found under provided directories" >&2
+    exit 1
+fi
+
+echo "[golang-builder] resolved dirs: source=${SOURCE_DIR}, metadata=${METADATA_DIR}, build=${BUILD_OUTPUT_DIR}"
+
+TYPE=$(jq -r .type "${METADATA_DIR}/metadata.json" | tr '[:upper:]' '[:lower:]')
+if [ "${TYPE}" != "golang" ]; then
+    exit 1
+fi
+
+if [ -d "${SOURCE_DIR}/META-INF" ]; then
+    mkdir -p "${BUILD_OUTPUT_DIR}/META-INF"
+    cp -a "${SOURCE_DIR}/META-INF/." "${BUILD_OUTPUT_DIR}/META-INF/"
+fi
+
+export GOOS=${GOOS:-$(go env GOOS)}
+export GOARCH=${GOARCH:-$(go env GOARCH)}
+export GO111MODULE=${GO111MODULE:-on}
+export CGO_ENABLED=0
+
+(
+    cd "${SOURCE_DIR}"
+    go build -o "${BUILD_OUTPUT_DIR}/chaincode"
+)
