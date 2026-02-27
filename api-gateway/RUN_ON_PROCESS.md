@@ -91,20 +91,27 @@ From the repo root (`thesis-blockchain/`):
    process runner now refuses to start when those ports are occupied.
 
 6. Generate or refresh the MSP material and channel artifacts (only needed the
-   first time or whenever you need a clean slate). **Run these commands from the
-   `api-gateway/` directory** because the process runner reads artifacts from
-   there, not from the repo root:
+   first time or whenever you need a clean slate). **Run these commands from the `api-gateway/` directory** because the process runner reads artifacts from there, not from the repo root:
    ```bash
    cd api-gateway
    rm -rf organizations system-genesis-block channel-artifacts
+   ```
 
-   # locate the binary and add it to PATH if `cryptogen` is not yet found
+   You should check whether the cryptogen is available:
+   ```bash
+   cryptogen version
+   ```
+
+   Locate the binary and add it to PATH if `cryptogen` is not yet found
+   ```bash
    find / -name cryptogen 2>/dev/null   # expect .../test-network/organizations/cryptogen and .../bin/cryptogen
    nano ~/.bashrc                      # append: export PATH=$PATH:/root/thesis-blockchain/bin
    source ~/.bashrc
    which cryptogen                     # should print /root/thesis-blockchain/bin/cryptogen
    cryptogen version
+   ```
 
+   ```bash
    cryptogen generate --config=crypto-config.yaml --output=organizations
 
    export FABRIC_CFG_PATH=$PWD/configtx
@@ -121,18 +128,16 @@ From the repo root (`thesis-blockchain/`):
      -outputAnchorPeersUpdate channel-artifacts/Org1MSPanchors.tx
    ```
 
-7. Point the Fabric hostnames at `127.0.0.1` so TLS validation succeeds:
-   ```
-   127.0.0.1 orderer.nebula.com peer0.org1.nebula.com peer1.org1.nebula.com peer2.org1.nebula.com
-   ```
-
-8. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
+9. Copy `api-gateway/.env.example` to `.env`, fill in `AUTH_JWT_SECRET` and
    `ADMIN_PUBLIC_KEY`, and keep the rest aligned with your deployment.
+   ```bash
+   cp .env.example .env
+   ```
    The process runner automatically loads this file.
    - You can keep Docker-style `ORDERER_ENDPOINT`, `PEER_ENDPOINTS`, and
      `ORDERER_TLS_CA` values in `.env`; the runner normalizes them for process mode.
 
-9. Generate the admin Ed25519 keypair (used to sign VCs and populate
+10. Generate the admin Ed25519 keypair (used to sign VCs and populate
    `ADMIN_PUBLIC_KEY`):
    ```bash
    openssl genpkey -algorithm Ed25519 -out admin_ed25519_sk.pem
@@ -143,11 +148,10 @@ From the repo root (`thesis-blockchain/`):
    `ADMIN_PUBLIC_KEY=...`. Keep `admin_ed25519_sk.pem` safe—you will need it when
    signing VCs.
 
-10. Optional preflight check before first start:
+11. Optional preflight check before first start:
    ```bash
    command -v orderer peer go jq perl node npm >/dev/null
    go version
-   ls api-gateway/config/{core.yaml,orderer.yaml,configtx.yaml}
    ```
 
 ## 2. Prepare trainer identities
